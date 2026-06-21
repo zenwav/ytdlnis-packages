@@ -87,7 +87,7 @@ jobs:
 
       - name: Prepare build scripts
         run: |
-          cp ytdlnis-packages/scripts/build_python.sh termux-packages/build_python.sh
+          cp scripts/build_python.sh termux-packages/build_python.sh
           chmod +x termux-packages/build_python.sh
 
       - name: Set up version

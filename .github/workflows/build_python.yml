@@ -177,11 +177,11 @@ jobs:
       - name: Verify build outputs
         run: |
           echo "=== JNI Libraries Structure ==="
-          find termux-packages/jniLibs -type f
+          find termux-packages/output/jniLibs -type f
           for arch in arm64-v8a armeabi-v7a x86 x86_64; do
-            if [ -d "termux-packages/jniLibs/$arch" ]; then
+            if [ -d "termux-packages/output/jniLibs/$arch" ]; then
               echo "--- $arch ---"
-              ls -lh "termux-packages/jniLibs/$arch/"
+              ls -lh "termux-packages/output/jniLibs/$arch/"
             fi
           done
 
@@ -192,7 +192,7 @@ jobs:
           RELEASE_DIR="${{ github.workspace }}/release"
           mkdir -p "$RELEASE_DIR"
           
-          cd termux-packages/jniLibs
+          cd termux-packages/output/jniLibs
           
           # Package each architecture
           for arch in arm64-v8a armeabi-v7a x86 x86_64; do

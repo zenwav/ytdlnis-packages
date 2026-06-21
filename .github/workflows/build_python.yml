@@ -13,8 +13,11 @@ jobs:
     name: Build curl_cffi wheels
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout curl_cffi repository
         uses: actions/checkout@v4
+        with:
+          repository: lexiforest/curl_cffi
+          path: curl_cffi
 
       - name: Set up Python
         uses: actions/setup-python@v5

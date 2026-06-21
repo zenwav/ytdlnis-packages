@@ -1,14 +1,11 @@
 #!/bin/bash
+set -e
 
 # PHASE 1 - BUILD
-ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
+ARCHITECTURES=("aarch64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
     "python"
-    "python-cryptodome"
-    "python-mutagen"
-    "python-cffi"
-    "python-certifi"
     "quickjs"
     "libandroid-support"
     "libffi"
@@ -81,18 +78,17 @@ for ARCH in "${ARCHITECTURES[@]}"; do
         echo "Detected Python version directory: $PYTHON_VERSION_DIR"
         SITE_PACKAGES="$USR_ROOT/lib/$PYTHON_VERSION_DIR/site-packages"
 
-        # Inject curl_cffi if wheel is provided (only for arm64-v8a)
+        # Inject python wheels if provided (only for arm64-v8a)
         if [[ "$JNI_ARCH" == "arm64-v8a" ]]; then
             WHEEL_DIR="${PWD}/curl_cffi_wheels/$JNI_ARCH"
             if [ -d "$WHEEL_DIR" ]; then
-                WHEEL_FILE=$(find "$WHEEL_DIR" -name "curl_cffi-*.whl" | head -n 1)
-                if [[ -f "$WHEEL_FILE" ]]; then
-                    echo "Injecting curl_cffi wheel: $WHEEL_FILE into $SITE_PACKAGES"
-                    # Unzip wheel directly into site-packages
-                    unzip -o "$WHEEL_FILE" -d "$SITE_PACKAGES"
-                else
-                    echo "Warning: No curl_cffi wheel found in $WHEEL_DIR"
-                fi
+                for wheel in "$WHEEL_DIR"/*.whl; do
+                    if [[ -f "$wheel" ]]; then
+                        echo "Injecting wheel: $wheel into $SITE_PACKAGES"
+                        # Unzip wheel directly into site-packages
+                        unzip -o "$wheel" -d "$SITE_PACKAGES"
+                    fi
+                done
             else
                 echo "Warning: Wheel directory $WHEEL_DIR not found"
             fi

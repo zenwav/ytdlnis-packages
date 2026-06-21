@@ -10,27 +10,33 @@ on:
 
 jobs:
   build_curl_cffi:
-    name: Build wheels for ${{ matrix.arch }}
+    name: Build curl_cffi wheels (${{ matrix.jni_arch }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - arch: arm64_v8a
-            termux_arch: aarch64
+          # termux_arch : arch name used by Termux's build-package.sh
+          # jni_arch    : Android JNI lib folder name
+          # cibw_arch   : cibuildwheel Android arch identifier
+          # termux_binary: Termux apt repo binary-<arch> subdir used to
+          #                fetch the prebuilt libffi deb for cffi
+          - termux_arch: aarch64
             jni_arch: arm64-v8a
-            build_curl_cffi: true
-          - arch: x86_64
-            termux_arch: x86_64
-            jni_arch: x86_64
-            build_curl_cffi: true
-          - arch: armeabi-v7a
-            termux_arch: arm
+            cibw_arch: arm64_v8a
+            termux_binary: binary-aarch64
+          - termux_arch: arm
             jni_arch: armeabi-v7a
-            build_curl_cffi: false
-          - arch: x86
-            termux_arch: i686
+            cibw_arch: armeabi_v7a
+            termux_binary: binary-arm
+          - termux_arch: i686
             jni_arch: x86
-            build_curl_cffi: false
+            cibw_arch: x86
+            termux_binary: binary-i686
+          - termux_arch: x86_64
+            jni_arch: x86_64
+            cibw_arch: x86_64
+            termux_binary: binary-x86_64
     steps:
       - name: Checkout curl_cffi repository
         uses: actions/checkout@v7
@@ -63,13 +69,12 @@ jobs:
           platforms: all
 
       - name: Build curl_cffi Wheel
-        if: ${{ matrix.build_curl_cffi }}
         uses: pypa/cibuildwheel@v3.3.1
         with:
           package-dir: curl_cffi
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp313-android_${{ matrix.arch }}
+          CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
           CIBW_BEFORE_ALL: "make -C curl_cffi preprocess"
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
@@ -77,21 +82,29 @@ jobs:
       - name: Build cffi Wheel
         run: |
           pip install cibuildwheel==3.3.1
-          # Download and extract libffi deb package from Termux repository
-          curl -L -o packages.txt https://packages-cf.termux.org/apt/termux-main/dists/stable/main/binary-${{ matrix.termux_arch }}/Packages
+          # Download and extract libffi deb package from the Termux
+          # repository for THIS matrix arch. The repo layout is:
+          #   .../dists/stable/main/binary-<arch>/Packages
+          # and the per-arch deb lives under the same tree.
+          curl -L -o packages.txt "https://packages-cf.termux.org/apt/termux-main/dists/stable/main/${{ matrix.termux_binary }}/Packages"
           libffi_path=$(grep -A 10 "Package: libffi$" packages.txt | grep "Filename: " | cut -d' ' -f2)
           curl -L -o libffi.deb "https://packages-cf.termux.org/apt/termux-main/$libffi_path"
-          
+
           # Download and unpack cffi source
           pip download --no-binary :all: --no-deps cffi
           tar -xf cffi-*.tar.gz
           cffi_dir=$(ls -d cffi-*/)
-          
+
           # Extract libffi inside the cffi project folder
           mkdir -p "$cffi_dir/libffi_extracted"
           dpkg-deb -x libffi.deb "$cffi_dir/libffi_extracted"
 
-          # Resolve the ABSOLUTE host path to the extracted libffi
+          # Resolve the ABSOLUTE host path to the extracted libffi.
+          # NOTE: cibuildwheel's Android platform builds directly on the host
+          # runner (NOT inside a Docker container), so the package lives at
+          # $GITHUB_WORKSPACE/<cffi_dir>, not at /project. Hardcoding /project
+          # here makes the compiler look for ffi.h in a path that does not exist,
+          # which is exactly the "fatal error: 'ffi.h' file not found" we saw.
           LIBFFI_PREFIX="${PWD%/}/${cffi_dir%/}/libffi_extracted/data/data/com.termux/files/usr"
           export LIBFFI_PREFIX
 
@@ -113,13 +126,13 @@ jobs:
           open(setup_path, 'w').write(content)
           print('setup.py patched successfully! libffi prefix:', prefix)
           "
-          
+
           # Build cffi using cibuildwheel
           cibuildwheel "$cffi_dir" --output-dir wheelhouse
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp313-android_${{ matrix.arch }}
-          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
+          CIBW_ARCHS: ${{ matrix.cibw_arch }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -131,15 +144,15 @@ jobs:
           cibuildwheel "$crypto_dir" --output-dir wheelhouse
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp313-android_${{ matrix.arch }}
-          CIBW_ARCHS: ${{ matrix.arch }}
+          CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
+          CIBW_ARCHS: ${{ matrix.cibw_arch }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
-      - name: Upload Wheels
+      - name: Upload Wheels (${{ matrix.jni_arch }})
         uses: actions/upload-artifact@v7
         with:
-          name: python-wheels-${{ matrix.jni_arch }}
+          name: curl_cffi-android-wheels-${{ matrix.jni_arch }}
           path: wheelhouse/*.whl
 
   build_python:
@@ -153,24 +166,71 @@ jobs:
       - name: Checkout termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages
 
-      - name: Download all wheels
+      - name: Download curl_cffi wheels (all ABIs)
         uses: actions/download-artifact@v8
         with:
+          # Match every per-arch wheel artifact produced by the
+          # build_curl_cffi matrix and merge them into a single folder.
+          pattern: curl_cffi-android-wheels-*
+          merge-multiple: true
           path: curl_cffi_wheels_downloaded
 
       - name: Prepare Wheels Directory
         run: |
-          # Copy compiled wheels for each architecture
-          for arch in arm64-v8a x86_64 armeabi-v7a x86; do
-            mkdir -p "termux-packages/curl_cffi_wheels/$arch"
-            if [ -d "curl_cffi_wheels_downloaded/python-wheels-$arch" ]; then
-              find "curl_cffi_wheels_downloaded/python-wheels-$arch" -name "*.whl" -exec cp {} "termux-packages/curl_cffi_wheels/$arch/" \;
-            fi
-            # Download pure-python wheels directly into each architecture directory
-            pip download --only-binary=:all: --no-deps --dest "termux-packages/curl_cffi_wheels/$arch" mutagen certifi
+          # cibuildwheel names Android wheels with a platform tag of the
+          # form "android_<cibw_arch>", e.g.:
+          #   curl_cffi-0.7.4-cp313-cp313-android_arm64_v8a.whl
+          #   cffi-1.17.1-cp313-cp313-android_armeabi_v7a.whl
+          #   pycryptodome-3.21.0-cp313-cp313-android_x86.whl
+          #   cffi-1.17.1-cp313-cp313-android_x86_64.whl
+          #
+          # We sort each wheel into the matching jniLibs arch folder so
+          # build_python.sh can inject it during packaging.
+          declare -A abi_map=(
+            [arm64-v8a]=arm64_v8a
+            [armeabi-v7a]=armeabi_v7a
+            [x86_64]=x86_64
+            [x86]=x86
+          )
+
+          # Create a wheel folder per JNI arch.
+          for jni_arch in "${!abi_map[@]}"; do
+            mkdir -p "termux-packages/curl_cffi_wheels/$jni_arch"
           done
+
+          # Walk every downloaded wheel and route it to the right arch.
+          # IMPORTANT: check x86_64 BEFORE x86, because "android_x86" is
+          # a substring of "android_x86_64" and would otherwise mis-route
+          # the 64-bit wheel into the 32-bit folder.
+          for whl in curl_cffi_wheels_downloaded/*.whl; do
+            [[ -f "$whl" ]] || continue
+            name=$(basename "$whl")
+            matched=0
+            for jni_arch in arm64-v8a armeabi-v7a x86_64 x86; do
+              cibw_tag="android_${abi_map[$jni_arch]}"
+              if [[ "$name" == *"$cibw_tag"* ]]; then
+                cp "$whl" "termux-packages/curl_cffi_wheels/$jni_arch/"
+                echo "Routed $name -> $jni_arch"
+                matched=1
+                break
+              fi
+            done
+            if [[ "$matched" -eq 0 ]]; then
+              echo "Warning: Could not classify wheel $name"
+            fi
+          done
+
+          # Download pure-python wheels (ABI-independent) into every arch
+          # folder so build_python.sh finds them regardless of which arch
+          # it is currently packaging.
+          for jni_arch in arm64-v8a armeabi-v7a x86 x86_64; do
+            pip download --only-binary=:all: --no-deps \
+              --dest "termux-packages/curl_cffi_wheels/$jni_arch" \
+              mutagen certifi
+          done
+
           echo "=== Wheels prepared ==="
-          find termux-packages/curl_cffi_wheels -type f
+          find termux-packages/curl_cffi_wheels -type f | sort
 
       - name: Prepare build scripts
         run: |
@@ -185,10 +245,10 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Python version: $VERSION"
 
-      - name: Build Python for all architectures
+      - name: Build Python for all ABIs
         working-directory: termux-packages
         run: |
-          echo "Building Python"
+          echo "Building Python for aarch64, arm, i686 and x86_64"
           ./scripts/run-docker.sh ./clean.sh
           ./scripts/run-docker.sh ./build_python.sh
 
@@ -209,14 +269,14 @@ jobs:
           VERSION="${{ steps.version.outputs.VERSION }}"
           RELEASE_DIR="${{ github.workspace }}/release"
           mkdir -p "$RELEASE_DIR"
-          
+
           cd termux-packages/output/jniLibs
-          
+
           # Package each architecture
           for arch in arm64-v8a armeabi-v7a x86 x86_64; do
             if [ -d "$arch" ]; then
               echo "Packaging $arch..."
-              
+
               # Verify required files exist
               if [ ! -f "$arch/libpython.so" ]; then
                 echo "ERROR: libpython.so not found in $arch"
@@ -226,20 +286,20 @@ jobs:
                 echo "ERROR: libpython.zip.so not found in $arch"
                 exit 1
               fi
-              
+
               # Create zip: python-VERSION-ARCH.zip
               ZIP_NAME="python-${VERSION}-${arch}.zip"
               cd "$arch"
               zip -9 "$RELEASE_DIR/$ZIP_NAME" *
               cd ..
-              
-              echo "✓ Created: $ZIP_NAME"
+
+              echo "Created: $ZIP_NAME"
               ls -lh "$RELEASE_DIR/$ZIP_NAME"
             else
-              echo "⚠ WARNING: Architecture $arch not found"
+              echo "WARNING: Architecture $arch not found"
             fi
           done
-          
+
           # List all created packages
           echo ""
           echo "=== Release Packages ==="
@@ -294,11 +354,12 @@ jobs:
 
       - name: Build Summary
         run: |
-          echo "## Build Complete! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "## Build Complete!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "**Version:** ${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
           echo "**Trigger:** Manual trigger (workflow_dispatch)" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "**ABIs:** arm64-v8a, armeabi-v7a, x86, x86_64" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Artifacts Created:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

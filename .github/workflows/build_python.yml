@@ -64,6 +64,7 @@ jobs:
         env:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_arm64_v8a
+          CIBW_ARCHS: arm64_v8a
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -76,6 +77,7 @@ jobs:
         env:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_arm64_v8a
+          CIBW_ARCHS: arm64_v8a
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 

@@ -54,6 +54,31 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
+      - name: Build cffi Wheel
+        run: |
+          pip install cibuildwheel==3.3.1
+          pip download --no-binary :all: --no-deps cffi
+          tar -xf cffi-*.tar.gz
+          cffi_dir=$(ls -d cffi-*/)
+          cibuildwheel "$cffi_dir" --output-dir wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_BUILD: cp313-android_arm64_v8a
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_API_LEVEL: 24
+
+      - name: Build pycryptodome Wheel
+        run: |
+          pip download --no-binary :all: --no-deps pycryptodome
+          tar -xf pycryptodome-*.tar.gz
+          crypto_dir=$(ls -d pycryptodome-*/)
+          cibuildwheel "$crypto_dir" --output-dir wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_BUILD: cp313-android_arm64_v8a
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_API_LEVEL: 24
+
       - name: Upload Wheels
         uses: actions/upload-artifact@v7
         with:
@@ -81,7 +106,9 @@ jobs:
         run: |
           mkdir -p termux-packages/curl_cffi_wheels/arm64-v8a
           # Find and copy wheels
-          find curl_cffi_wheels_downloaded -name "*arm64_v8a.whl" -exec cp {} termux-packages/curl_cffi_wheels/arm64-v8a/ \;
+          find curl_cffi_wheels_downloaded -name "*.whl" -exec cp {} termux-packages/curl_cffi_wheels/arm64-v8a/ \;
+          # Download pure-python wheels directly
+          pip download --only-binary=:all: --no-deps --dest termux-packages/curl_cffi_wheels/arm64-v8a mutagen certifi
           echo "=== Wheels prepared ==="
           find termux-packages/curl_cffi_wheels -type f
 
@@ -171,30 +198,6 @@ jobs:
         with:
           name: python-${{ steps.version.outputs.VERSION }}-arm64-v8a
           path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-arm64-v8a.zip
-          retention-days: 90
-          compression-level: 0
-
-      - name: Upload armeabi-v7a
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-${{ steps.version.outputs.VERSION }}-armeabi-v7a
-          path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-armeabi-v7a.zip
-          retention-days: 90
-          compression-level: 0
-
-      - name: Upload x86
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-${{ steps.version.outputs.VERSION }}-x86
-          path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-x86.zip
-          retention-days: 90
-          compression-level: 0
-
-      - name: Upload x86_64
-        uses: actions/upload-artifact@v7
-        with:
-          name: python-${{ steps.version.outputs.VERSION }}-x86_64
-          path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-x86_64.zip
           retention-days: 90
           compression-level: 0
 

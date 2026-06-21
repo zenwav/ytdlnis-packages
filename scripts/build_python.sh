@@ -6,6 +6,8 @@ ARCHITECTURES=("aarch64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
     "python"
+    "python-cffi"
+    "python-pycryptodomex"
     "quickjs"
     "libandroid-support"
     "libffi"

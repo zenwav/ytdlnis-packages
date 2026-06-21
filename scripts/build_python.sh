@@ -2,6 +2,11 @@
 set -e
 
 # PHASE 1 - BUILD
+# All four Android ABIs are built here. Termux uses these arch names:
+#   aarch64 -> arm64-v8a
+#   arm     -> armeabi-v7a
+#   i686    -> x86
+#   x86_64  -> x86_64
 ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
@@ -85,7 +90,10 @@ for ARCH in "${ARCHITECTURES[@]}"; do
         echo "Detected Python version directory: $PYTHON_VERSION_DIR"
         SITE_PACKAGES="$USR_ROOT/lib/$PYTHON_VERSION_DIR/site-packages"
 
-        # Inject python wheels if provided
+        # Inject python wheels for every ABI. The wheel directory is
+        # named after the JNI arch (arm64-v8a, armeabi-v7a, x86, x86_64)
+        # and is populated by the CI workflow's "Prepare Wheels Directory"
+        # step before this script runs.
         WHEEL_DIR="${PWD}/curl_cffi_wheels/$JNI_ARCH"
         if [ -d "$WHEEL_DIR" ]; then
             for wheel in "$WHEEL_DIR"/*.whl; do

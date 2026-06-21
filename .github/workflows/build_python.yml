@@ -67,20 +67,36 @@ jobs:
           tar -xf cffi-*.tar.gz
           cffi_dir=$(ls -d cffi-*/)
           
-          # Extract libffi inside the mounted cffi project folder
+          # Extract libffi inside the cffi project folder
           mkdir -p "$cffi_dir/libffi_extracted"
           dpkg-deb -x libffi.deb "$cffi_dir/libffi_extracted"
-          
+
+          # Resolve the ABSOLUTE host path to the extracted libffi.
+          # NOTE: cibuildwheel's Android platform builds directly on the host
+          # runner (NOT inside a Docker container), so the package lives at
+          # $GITHUB_WORKSPACE/<cffi_dir>, not at /project. Hardcoding /project
+          # here makes the compiler look for ffi.h in a path that does not exist,
+          # which is exactly the "fatal error: 'ffi.h' file not found" we saw.
+          LIBFFI_PREFIX="${PWD%/}/${cffi_dir%/}/libffi_extracted/data/data/com.termux/files/usr"
+          export LIBFFI_PREFIX
+
           # Patch cffi's setup.py to use the extracted libffi paths directly
           python -c "
           import os
           setup_path = os.path.join('$cffi_dir', 'setup.py')
+          prefix = os.environ['LIBFFI_PREFIX']
           content = open(setup_path).read()
-          content = content.replace(\"include_dirs = ['/usr/include/ffi',\\n                '/usr/include/libffi']\", \"include_dirs = ['/project/libffi_extracted/data/data/com.termux/files/usr/include']\")
-          content = content.replace('library_dirs = []', \"library_dirs = ['/project/libffi_extracted/data/data/com.termux/files/usr/lib']\")
+          old_inc = \"include_dirs = ['/usr/include/ffi',\\n                '/usr/include/libffi']\"
+          new_inc = \"include_dirs = [\" + repr(prefix + '/include') + \"]\"
+          assert old_inc in content, 'include_dirs pattern not found in setup.py'
+          content = content.replace(old_inc, new_inc)
+          old_lib = 'library_dirs = []'
+          new_lib = \"library_dirs = [\" + repr(prefix + '/lib') + \"]\"
+          assert old_lib in content, 'library_dirs pattern not found in setup.py'
+          content = content.replace(old_lib, new_lib)
           content = content.replace('def use_pkg_config():', 'def use_pkg_config():\n    return')
           open(setup_path, 'w').write(content)
-          print('setup.py patched successfully!')
+          print('setup.py patched successfully! libffi prefix:', prefix)
           "
           
           # Build cffi using cibuildwheel

@@ -49,7 +49,7 @@ jobs:
           package-dir: curl_cffi
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp312-android_arm64_v8a
+          CIBW_BUILD: cp313-android_arm64_v8a
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 

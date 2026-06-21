@@ -50,6 +50,7 @@ jobs:
         env:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_arm64_v8a
+          CIBW_BEFORE_ALL: "make -C curl_cffi preprocess"
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 

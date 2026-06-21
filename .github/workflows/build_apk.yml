@@ -1,0 +1,91 @@
+name: Build Android APK and Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run ID of the Python Build workflow (leave blank for latest successful run)'
+        required: false
+        type: string
+
+jobs:
+  build_apk:
+    name: Build Android APK
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Download Python Environment Zips
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID="${{ github.event.inputs.run_id }}"
+          if [ -z "$RUN_ID" ]; then
+            echo "Searching for latest successful run of 'Build Python with curl_cffi for Android'..."
+            RUN_ID=$(gh run list --workflow "Build Python with curl_cffi for Android" --status success --limit 1 --json databaseId --jq '.[0].databaseId')
+            if [ -z "$RUN_ID" ]; then
+              echo "ERROR: No successful python build run found!"
+              exit 1
+            fi
+          fi
+          echo "Downloading artifacts from run ID: $RUN_ID"
+          gh run download "$RUN_ID" --dir python_environments
+
+      - name: Extract and place JNI libraries
+        run: |
+          # Locate the version from the downloaded folders name
+          VERSION_ZIP=$(find python_environments -name "python-*-arm64-v8a.zip" | head -n 1)
+          if [ -z "$VERSION_ZIP" ]; then
+            echo "ERROR: No zip found in python_environments!"
+            find python_environments
+            exit 1
+          fi
+          # Extract version: e.g. python-environments/python-3.12.11-arm64-v8a.zip -> 3.12.11
+          VERSION=$(echo "$VERSION_ZIP" | sed -E 's/.*python-([0-9.]+)-arm64-v8a.*/\1/')
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Detected version: $VERSION"
+
+          # Extract and place libs
+          for arch in arm64-v8a armeabi-v7a x86 x86_64; do
+            mkdir -p "python_package/app/src/main/jniLibs/$arch"
+            ZIP_PATH="python_environments/python-${VERSION}-${arch}/python-${VERSION}-${arch}.zip"
+            if [ -f "$ZIP_PATH" ]; then
+              unzip -o "$ZIP_PATH" -d "python_package/app/src/main/jniLibs/$arch/"
+            else
+              echo "Warning: No zip found for $arch at $ZIP_PATH"
+            fi
+          done
+          echo "=== JNI Libraries prepared ==="
+          find python_package/app/src/main/jniLibs -type f
+
+      - name: Build APK with Gradle
+        working-directory: python_package
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Copy built APKs for release
+        run: |
+          mkdir -p apk_release
+          find python_package/app/build/outputs/apk/release -name "*.apk" -exec cp {} apk_release/ \;
+          echo "=== APKs for release ==="
+          ls -lh apk_release/
+
+      - name: Create GitHub Release and Upload APKs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ env.VERSION }}" apk_release/*.apk \
+            --title "Python Package v${{ env.VERSION }}" \
+            --notes "Precompiled Python plugin release for YTDLnis containing curl_cffi and standard packages." \
+            --generate-notes || echo "Release already exists or failed to create."

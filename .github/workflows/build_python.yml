@@ -10,8 +10,27 @@ on:
 
 jobs:
   build_curl_cffi:
-    name: Build curl_cffi wheels
+    name: Build wheels for ${{ matrix.arch }}
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - arch: arm64_v8a
+            termux_arch: aarch64
+            jni_arch: arm64-v8a
+            build_curl_cffi: true
+          - arch: x86_64
+            termux_arch: x86_64
+            jni_arch: x86_64
+            build_curl_cffi: true
+          - arch: armeabi-v7a
+            termux_arch: arm
+            jni_arch: armeabi-v7a
+            build_curl_cffi: false
+          - arch: x86
+            termux_arch: i686
+            jni_arch: x86
+            build_curl_cffi: false
     steps:
       - name: Checkout curl_cffi repository
         uses: actions/checkout@v7
@@ -43,13 +62,14 @@ jobs:
         with:
           platforms: all
 
-      - name: Build Arm64-v8a Wheel
+      - name: Build curl_cffi Wheel
+        if: ${{ matrix.build_curl_cffi }}
         uses: pypa/cibuildwheel@v3.3.1
         with:
           package-dir: curl_cffi
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp313-android_arm64_v8a
+          CIBW_BUILD: cp313-android_${{ matrix.arch }}
           CIBW_BEFORE_ALL: "make -C curl_cffi preprocess"
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
@@ -58,7 +78,7 @@ jobs:
         run: |
           pip install cibuildwheel==3.3.1
           # Download and extract libffi deb package from Termux repository
-          curl -L -o packages.txt https://packages-cf.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
+          curl -L -o packages.txt https://packages-cf.termux.org/apt/termux-main/dists/stable/main/binary-${{ matrix.termux_arch }}/Packages
           libffi_path=$(grep -A 10 "Package: libffi$" packages.txt | grep "Filename: " | cut -d' ' -f2)
           curl -L -o libffi.deb "https://packages-cf.termux.org/apt/termux-main/$libffi_path"
           
@@ -71,12 +91,7 @@ jobs:
           mkdir -p "$cffi_dir/libffi_extracted"
           dpkg-deb -x libffi.deb "$cffi_dir/libffi_extracted"
 
-          # Resolve the ABSOLUTE host path to the extracted libffi.
-          # NOTE: cibuildwheel's Android platform builds directly on the host
-          # runner (NOT inside a Docker container), so the package lives at
-          # $GITHUB_WORKSPACE/<cffi_dir>, not at /project. Hardcoding /project
-          # here makes the compiler look for ffi.h in a path that does not exist,
-          # which is exactly the "fatal error: 'ffi.h' file not found" we saw.
+          # Resolve the ABSOLUTE host path to the extracted libffi
           LIBFFI_PREFIX="${PWD%/}/${cffi_dir%/}/libffi_extracted/data/data/com.termux/files/usr"
           export LIBFFI_PREFIX
 
@@ -103,8 +118,8 @@ jobs:
           cibuildwheel "$cffi_dir" --output-dir wheelhouse
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp313-android_arm64_v8a
-          CIBW_ARCHS: arm64_v8a
+          CIBW_BUILD: cp313-android_${{ matrix.arch }}
+          CIBW_ARCHS: ${{ matrix.arch }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -116,15 +131,15 @@ jobs:
           cibuildwheel "$crypto_dir" --output-dir wheelhouse
         env:
           CIBW_PLATFORM: android
-          CIBW_BUILD: cp313-android_arm64_v8a
-          CIBW_ARCHS: arm64_v8a
+          CIBW_BUILD: cp313-android_${{ matrix.arch }}
+          CIBW_ARCHS: ${{ matrix.arch }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
       - name: Upload Wheels
         uses: actions/upload-artifact@v7
         with:
-          name: curl_cffi-android-wheels
+          name: python-wheels-${{ matrix.jni_arch }}
           path: wheelhouse/*.whl
 
   build_python:
@@ -138,19 +153,22 @@ jobs:
       - name: Checkout termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages
 
-      - name: Download curl_cffi wheels
+      - name: Download all wheels
         uses: actions/download-artifact@v8
         with:
-          name: curl_cffi-android-wheels
           path: curl_cffi_wheels_downloaded
 
       - name: Prepare Wheels Directory
         run: |
-          mkdir -p termux-packages/curl_cffi_wheels/arm64-v8a
-          # Find and copy wheels
-          find curl_cffi_wheels_downloaded -name "*.whl" -exec cp {} termux-packages/curl_cffi_wheels/arm64-v8a/ \;
-          # Download pure-python wheels directly
-          pip download --only-binary=:all: --no-deps --dest termux-packages/curl_cffi_wheels/arm64-v8a mutagen certifi
+          # Copy compiled wheels for each architecture
+          for arch in arm64-v8a x86_64 armeabi-v7a x86; do
+            mkdir -p "termux-packages/curl_cffi_wheels/$arch"
+            if [ -d "curl_cffi_wheels_downloaded/python-wheels-$arch" ]; then
+              find "curl_cffi_wheels_downloaded/python-wheels-$arch" -name "*.whl" -exec cp {} "termux-packages/curl_cffi_wheels/$arch/" \;
+            fi
+            # Download pure-python wheels directly into each architecture directory
+            pip download --only-binary=:all: --no-deps --dest "termux-packages/curl_cffi_wheels/$arch" mutagen certifi
+          done
           echo "=== Wheels prepared ==="
           find termux-packages/curl_cffi_wheels -type f
 
@@ -167,7 +185,7 @@ jobs:
           echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
           echo "Python version: $VERSION"
 
-      - name: Build Python for aarch64
+      - name: Build Python for all architectures
         working-directory: termux-packages
         run: |
           echo "Building Python"
@@ -240,6 +258,30 @@ jobs:
         with:
           name: python-${{ steps.version.outputs.VERSION }}-arm64-v8a
           path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-arm64-v8a.zip
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload armeabi-v7a
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ steps.version.outputs.VERSION }}-armeabi-v7a
+          path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-armeabi-v7a.zip
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload x86
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ steps.version.outputs.VERSION }}-x86
+          path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-x86.zip
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload x86_64
+        uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ steps.version.outputs.VERSION }}-x86_64
+          path: ${{ github.workspace }}/release/python-${{ steps.version.outputs.VERSION }}-x86_64.zip
           retention-days: 90
           compression-level: 0
 

@@ -6,7 +6,7 @@ ARCHITECTURES=("aarch64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
     "python"
-    "quickjs"
+    "quickjs-ng"
     "libandroid-support"
     "libffi"
     "libsqlite"
@@ -14,7 +14,7 @@ packages=(
     "zlib"
     "brotli"
     "readline"
-    "libgdbm"
+    "gdbm"
     "libbz2"
     "liblzma"
 )

@@ -8,6 +8,9 @@ on:
         required: false
         type: string
 
+permissions:
+  contents: write
+
 jobs:
   build_apk:
     name: Build Android APK

@@ -77,7 +77,9 @@ jobs:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_arm64_v8a
           CIBW_ARCHS: arm64_v8a
-          CIBW_ENVIRONMENT: CFLAGS="-I/project/libffi_extracted/data/data/com.termux/files/usr/include" LDFLAGS="-L/project/libffi_extracted/data/data/com.termux/files/usr/lib"
+          CIBW_ENVIRONMENT_PASS_LINUX: CFLAGS LDFLAGS
+          CFLAGS: "-I/project/libffi_extracted/data/data/com.termux/files/usr/include"
+          LDFLAGS: "-L/project/libffi_extracted/data/data/com.termux/files/usr/lib"
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 

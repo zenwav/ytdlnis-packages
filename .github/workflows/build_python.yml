@@ -54,6 +54,46 @@ jobs:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
+      - name: Build cffi Wheel
+        run: |
+          pip install cibuildwheel==3.3.1
+          # Download and extract libffi deb package from Termux repository
+          curl -L -o packages.txt https://packages-cf.termux.org/apt/termux-main/dists/stable/main/binary-aarch64/Packages
+          libffi_path=$(grep -A 10 "Package: libffi$" packages.txt | grep "Filename: " | cut -d' ' -f2)
+          curl -L -o libffi.deb "https://packages-cf.termux.org/apt/termux-main/$libffi_path"
+          
+          # Download and unpack cffi source
+          pip download --no-binary :all: --no-deps cffi
+          tar -xf cffi-*.tar.gz
+          cffi_dir=$(ls -d cffi-*/)
+          
+          # Extract libffi inside the mounted cffi project folder
+          mkdir -p "$cffi_dir/libffi_extracted"
+          dpkg-deb -x libffi.deb "$cffi_dir/libffi_extracted"
+          
+          # Build cffi using cibuildwheel with CFLAGS and LDFLAGS pointing to libffi
+          cibuildwheel "$cffi_dir" --output-dir wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_BUILD: cp313-android_arm64_v8a
+          CIBW_ARCHS: arm64_v8a
+          CIBW_ENVIRONMENT: CFLAGS="-I/project/libffi_extracted/data/data/com.termux/files/usr/include" LDFLAGS="-L/project/libffi_extracted/data/data/com.termux/files/usr/lib"
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_API_LEVEL: 24
+
+      - name: Build pycryptodome Wheel
+        run: |
+          pip download --no-binary :all: --no-deps pycryptodome
+          tar -xf pycryptodome-*.tar.gz
+          crypto_dir=$(ls -d pycryptodome-*/)
+          cibuildwheel "$crypto_dir" --output-dir wheelhouse
+        env:
+          CIBW_PLATFORM: android
+          CIBW_BUILD: cp313-android_arm64_v8a
+          CIBW_ARCHS: arm64_v8a
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_API_LEVEL: 24
+
       - name: Upload Wheels
         uses: actions/upload-artifact@v7
         with:

@@ -10,7 +10,6 @@ set -e
 ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
-    "ca-certificates"
     "python"
     "quickjs-ng"
     "libandroid-support"
@@ -315,8 +314,15 @@ PYEOF
     # set_source, emit_c_code). We install a HOST (x86_64) cffi binary
     # wheel so it's importable during the build. The target cffi (for
     # the 32-bit arch) is installed separately to $SITE_PACKAGES.
+    # NOTE: setuptools>=77 hard-requires packaging>=24.2 (for SPDX license
+    # expression validation via packaging.licenses). Because we build with
+    # --no-build-isolation, the package metadata steps use THIS host setuptools,
+    # so we must also upgrade packaging here. The distro's system packaging is
+    # often 24.0 and triggers:
+    #   ImportError: Cannot import `packaging.licenses`.
+    #   Setuptools>=77.0.0 requires "packaging>=24.2" to work properly.
     echo "--- Installing host build dependencies ---"
-    python3 -m pip install --break-system-packages --upgrade 'cffi>=2.0.0' setuptools wheel pycparser
+    python3 -m pip install --break-system-packages --upgrade 'cffi>=2.0.0' setuptools 'packaging>=24.2' wheel pycparser
 
     # --- Cross-compilation config (applied per-command, NOT exported) ---
     # These env vars make the host interpreter's sysconfig/distutils report the

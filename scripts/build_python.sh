@@ -283,20 +283,25 @@ PYEOF
         python3 -m ensurepip --upgrade
     fi
 
+    # PEP 668: The Termux docker's system Python is externally managed
+    # and blocks `pip install` by default. We use --break-system-packages
+    # to override this on every pip invocation. This is safe because
+    # we're inside a disposable Docker container, not a user's machine.
+
     # --- Install host build dependencies ---
     # curl_cffi's build requires cffi>=2.0.0 for code generation (cdef,
     # set_source, emit_c_code). We install a HOST (x86_64) cffi binary
     # wheel so it's importable during the build. The target cffi (for
     # the 32-bit arch) is installed separately to $SITE_PACKAGES.
     echo "--- Installing host build dependencies ---"
-    python3 -m pip install --upgrade 'cffi>=2.0.0' setuptools wheel pycparser
+    python3 -m pip install --break-system-packages --upgrade 'cffi>=2.0.0' setuptools wheel pycparser
 
     # --- Cross-compile cffi ---
     echo "--- Building cffi for ${ARCH} ---"
     local CFFI_SRC_DIR="/tmp/cffi_src_${ARCH}"
     rm -rf "$CFFI_SRC_DIR"
     mkdir -p "$CFFI_SRC_DIR"
-    python3 -m pip download --no-binary :all: --no-deps cffi -d "$CFFI_SRC_DIR"
+    python3 -m pip download --break-system-packages --no-binary :all: --no-deps cffi -d "$CFFI_SRC_DIR"
     tar -xf "$CFFI_SRC_DIR"/cffi-*.tar.gz -C "$CFFI_SRC_DIR"
     local cffi_dir
     cffi_dir=$(ls -d "${CFFI_SRC_DIR}/cffi-"*/)
@@ -324,11 +329,11 @@ open(setup_path, 'w').write(content)
 print('Patched cffi setup.py')
 "
 
-    python3 -m pip install --no-deps --target="$SITE_PACKAGES" "$cffi_dir"
+    python3 -m pip install --break-system-packages --no-deps --target="$SITE_PACKAGES" "$cffi_dir"
 
     # --- Cross-compile pycryptodome ---
     echo "--- Building pycryptodome for ${ARCH} ---"
-    python3 -m pip install --no-binary :all: --no-deps --target="$SITE_PACKAGES" pycryptodome
+    python3 -m pip install --break-system-packages --no-binary :all: --no-deps --target="$SITE_PACKAGES" pycryptodome
 
     # --- Cross-compile curl_cffi ---
     # This is the most complex part. curl_cffi's build process:
@@ -362,7 +367,7 @@ print('Patched cffi setup.py')
         local CURL_CFFI_SRC_DIR="/tmp/curl_cffi_src_${ARCH}"
         rm -rf "$CURL_CFFI_SRC_DIR"
         mkdir -p "$CURL_CFFI_SRC_DIR"
-        python3 -m pip download --no-binary :all: --no-deps curl_cffi -d "$CURL_CFFI_SRC_DIR"
+        python3 -m pip download --break-system-packages --no-binary :all: --no-deps curl_cffi -d "$CURL_CFFI_SRC_DIR"
         tar -xf "$CURL_CFFI_SRC_DIR"/curl_cffi-*.tar.gz -C "$CURL_CFFI_SRC_DIR"
         local curl_cffi_dir
         curl_cffi_dir=$(ls -d "${CURL_CFFI_SRC_DIR}/curl_cffi-"*/)
@@ -427,7 +432,7 @@ with open('${curl_cffi_dir}/libs.json') as f:
         # an isolated build env that would install a different cffi.
         # The cross-compiler (CC) and patched EXT_SUFFIX ensure the
         # compiled _wrapper.so targets the 32-bit arch.
-        python3 -m pip install --no-build-isolation --no-deps \
+        python3 -m pip install --break-system-packages --no-build-isolation --no-deps \
             --target="$SITE_PACKAGES" "$curl_cffi_dir"
 
         unset CIBW_PLATFORM
@@ -440,7 +445,7 @@ with open('${curl_cffi_dir}/libs.json') as f:
 
     # --- Install pure-Python packages (arch-independent) ---
     echo "--- Installing pure-python packages ---"
-    python3 -m pip install --only-binary=:all: --no-deps --target="$SITE_PACKAGES" mutagen certifi
+    python3 -m pip install --break-system-packages --only-binary=:all: --no-deps --target="$SITE_PACKAGES" mutagen certifi
 
     # --- Verify compiled extensions have the correct EXT_SUFFIX ---
     echo "=== Verifying compiled .so files ==="

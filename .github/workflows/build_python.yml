@@ -407,11 +407,16 @@ jobs:
           # Use find with -name to catch .whl files at any depth —
           # download-artifact may extract them into subdirectories
           # depending on the artifact's internal structure.
+          #
+          # The wheel platform tag includes the API level, e.g.
+          # "android_24_arm64_v8a" (not "android_arm64_v8a"). We match
+          # on "_<arch>" with leading underscore to avoid substring
+          # collisions (e.g. "_x86_64" vs "_x86").
           while IFS= read -r -d '' whl; do
             name=$(basename "$whl")
             for jni_arch in arm64-v8a x86_64; do
-              cibw_tag="android_${abi_map[$jni_arch]}"
-              if [[ "$name" == *"$cibw_tag"* ]]; then
+              arch_tag="_${abi_map[$jni_arch]}"
+              if [[ "$name" == *"$arch_tag"* ]]; then
                 cp "$whl" "termux-packages/curl_cffi_wheels/$jni_arch/"
                 echo "Routed $name -> $jni_arch"
                 break

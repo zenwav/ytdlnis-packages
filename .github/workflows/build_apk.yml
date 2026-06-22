@@ -85,11 +85,27 @@ jobs:
           echo "=== APKs for release ==="
           ls -lh apk_release/
 
+      - name: Generate Release Metadata
+        run: |
+          # Pretty human-readable format for the title: DD/MM/YY @ HH:mm:ss
+          PRETTY_DATE=$(date +"%d/%m/%y @ %H:%M:%S")
+          
+          # Safe Git ref format for the tag: DD.MM.YY-HH.MM.SS (no spaces, no colons)
+          SAFE_DATE=$(date +"%d.%m.%y-%H.%M.%S")
+          
+          TAG_NAME="v${{ env.VERSION }}-${SAFE_DATE}"
+          RELEASE_TITLE="Python Package v${{ env.VERSION }} - ${PRETTY_DATE}"
+          
+          echo "TAG_NAME=$TAG_NAME" >> $GITHUB_ENV
+          echo "RELEASE_TITLE=$RELEASE_TITLE" >> $GITHUB_ENV
+          echo "Generated Tag Name: $TAG_NAME"
+          echo "Generated Release Title: $RELEASE_TITLE"
+
       - name: Create GitHub Release and Upload APKs
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${{ env.VERSION }}" apk_release/*.apk \
-            --title "Python Package v${{ env.VERSION }}" \
+          gh release create "$TAG_NAME" apk_release/*.apk \
+            --title "$RELEASE_TITLE" \
             --notes "Precompiled Python plugin release for YTDLnis containing curl_cffi and standard packages." \
-            --generate-notes || echo "Release already exists or failed to create."
+            --generate-notes

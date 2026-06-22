@@ -108,13 +108,32 @@ build_packages_from_source() {
     echo "=== Cross-compiling Python packages for $ARCH ($JNI_ARCH) ==="
 
     # --- Locate the NDK inside the Termux builder image ---
-    local NDK_DIR
-    NDK_DIR=$(ls -d "${ANDROID_HOME:-/opt/android-sdk}/ndk/"*/ 2>/dev/null | sort -V | tail -1)
+    # The Termux builder Docker image installs the NDK at
+    # $HOME/lib/android-ndk-r<version> (e.g. /home/builder/lib/android-ndk-r29).
+    # The Termux build system also exports $NDK pointing at this path.
+    # We try several locations in order of preference.
+    local NDK_DIR=""
+    # 1. $NDK env var (set by Termux's build system)
+    if [ -n "${NDK:-}" ] && [ -d "${NDK}" ]; then
+        NDK_DIR="${NDK}/"
+    fi
+    # 2. $HOME/lib/android-ndk-r* (Termux docker default layout)
+    if [ -z "$NDK_DIR" ]; then
+        NDK_DIR=$(ls -d "${HOME}/lib/android-ndk-r"*/ 2>/dev/null | sort -V | tail -1)
+    fi
+    # 3. $ANDROID_HOME/ndk/* (GitHub Actions setup-android layout)
+    if [ -z "$NDK_DIR" ]; then
+        NDK_DIR=$(ls -d "${ANDROID_HOME:-/opt/android-sdk}/ndk/"*/ 2>/dev/null | sort -V | tail -1)
+    fi
+    # 4. ~/Android/Sdk/ndk/* (Android Studio default layout)
     if [ -z "$NDK_DIR" ]; then
         NDK_DIR=$(ls -d "${HOME}/Android/Sdk/ndk/"*/ 2>/dev/null | sort -V | tail -1)
     fi
     if [ -z "$NDK_DIR" ]; then
-        echo "ERROR: NDK not found. Tried ${ANDROID_HOME:-/opt/android-sdk}/ndk/ and ~/Android/Sdk/ndk/"
+        echo "ERROR: NDK not found. Tried \$NDK, \$HOME/lib/android-ndk-r*, \${ANDROID_HOME}/ndk/*, ~/Android/Sdk/ndk/*"
+        echo "  ANDROID_HOME=${ANDROID_HOME:-<unset>}"
+        echo "  NDK=${NDK:-<unset>}"
+        echo "  HOME=$HOME"
         return 1
     fi
     echo "NDK: $NDK_DIR"

@@ -370,6 +370,27 @@ jobs:
           find libcurl_impersonate_downloaded -type f 2>/dev/null || echo "(empty or missing)"
           echo ""
 
+          # download-artifact@v8 may leave .zip files if the artifact
+          # itself is a zip. Extract any .zip files found in the download
+          # directories so the .whl / .tar.gz files inside are accessible.
+          for dir in curl_cffi_wheels_downloaded libcurl_impersonate_downloaded; do
+            if [ -d "$dir" ]; then
+              find "$dir" -name '*.zip' -exec sh -c '
+                echo "Extracting: $1"
+                unzip -o "$1" -d "$(dirname "$1")"
+                rm -f "$1"
+              ' _ {} \;
+            fi
+          done
+
+          echo "=== After zip extraction ==="
+          echo "curl_cffi_wheels_downloaded:"
+          find curl_cffi_wheels_downloaded -type f 2>/dev/null || echo "(empty or missing)"
+          echo ""
+          echo "libcurl_impersonate_downloaded:"
+          find libcurl_impersonate_downloaded -type f 2>/dev/null || echo "(empty or missing)"
+          echo ""
+
           # --- Route 64-bit wheels to their arch folders ---
           declare -A abi_map=(
             [arm64-v8a]=arm64_v8a

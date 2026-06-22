@@ -1,0 +1,295 @@
+name: Build Deno APK for Android
+
+# Combined workflow: builds deno jniLibs from termux source, then assembles,
+# signs, and releases the YTDLnis Deno Package APK.
+#
+# Required GitHub repository secrets for release signing:
+#   DENO_KEYSTORE_BASE64    base64-encoded .jks keystore (keytool + base64 -w0)
+#   DENO_KEYSTORE_PASSWORD  keystore password
+#   DENO_KEY_ALIAS          key alias inside the keystore
+#   DENO_KEY_PASSWORD       password for that key alias
+# If any are missing, the gradlew assembleRelease step will fail when gradle
+# cannot load the keystore. (The gradle's try/catch only suppresses errors
+# when keystore.properties does not exist; once written, it must be valid.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Deno plugin for YTDLnis (optional override; otherwise read from termux)'
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build_deno:
+    name: Build Deno JNI Libraries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Checkout termux-packages
+        run: git clone --depth=1 https://github.com/termux/termux-packages
+
+      - name: Prepare build script
+        run: |
+          cp scripts/build-deno.sh termux-packages/build-deno.sh
+          chmod +x termux-packages/build-deno.sh
+
+      - name: Set up version
+        id: version
+        run: |
+          cd termux-packages/packages/deno
+          # TERMUX_PKG_VERSION uses Debian-style epoch prefix "1:"; strip it
+          # so "1:2.8.3" becomes "2.8.3" for the artifact / release tag.
+          RAW=$(grep "^TERMUX_PKG_VERSION=" build.sh | cut -d'=' -f2 | tr -d '"' | tr -d "'")
+          VERSION="${RAW#*:}"
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+          echo "Deno version: $VERSION (raw: $RAW)"
+
+      - name: Build Deno (arm64-v8a + x86_64 only)
+        working-directory: termux-packages
+        run: |
+          echo "Building Deno"
+          ./scripts/run-docker.sh ./clean.sh
+          ./scripts/run-docker.sh ./build-deno.sh
+
+      - name: Verify build outputs
+        run: |
+          echo "=== JNI Libraries Structure ==="
+          find termux-packages/output/jniLibs -type f
+          # Deno is 64-bit only (TERMUX_PKG_EXCLUDED_ARCHES="i686, arm" in
+          # termux's deno recipe), so only these two ABIs are expected.
+          for arch in arm64-v8a x86_64; do
+            if [ -d "termux-packages/output/jniLibs/$arch" ]; then
+              echo "--- $arch ---"
+              ls -lh "termux-packages/output/jniLibs/$arch/"
+            else
+              echo "ERROR: expected ABI $arch missing from output/jniLibs"
+              find termux-packages/output -maxdepth 3 -type d
+              exit 1
+            fi
+          done
+
+      - name: Create release packages
+        id: package
+        run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          RELEASE_DIR="${{ github.workspace }}/release"
+          mkdir -p "$RELEASE_DIR"
+
+          cd termux-packages/output/jniLibs
+
+          for arch in arm64-v8a x86_64; do
+            if [ -d "$arch" ]; then
+              echo "Packaging $arch..."
+
+              # Verify required files exist
+              if [ ! -f "$arch/libdeno.so" ]; then
+                echo "ERROR: libdeno.so not found in $arch"
+                exit 1
+              fi
+              if [ ! -f "$arch/libdeno.zip.so" ]; then
+                echo "ERROR: libdeno.zip.so not found in $arch"
+                exit 1
+              fi
+
+              ZIP_NAME="deno-${VERSION}-${arch}.zip"
+              cd "$arch"
+              zip -9 "$RELEASE_DIR/$ZIP_NAME" *
+              cd ..
+
+              echo "✓ Created: $ZIP_NAME"
+              ls -lh "$RELEASE_DIR/$ZIP_NAME"
+            fi
+          done
+
+          echo ""
+          echo "=== Release Packages ==="
+          ls -lh "$RELEASE_DIR/"
+
+      - name: Generate checksums
+        working-directory: ${{ github.workspace }}/release
+        run: |
+          sha256sum *.zip > SHA256SUMS.txt
+          echo ""
+          echo "=== SHA256 Checksums ==="
+          cat SHA256SUMS.txt
+
+      - name: Upload arm64-v8a jniLibs
+        uses: actions/upload-artifact@v7
+        with:
+          name: deno-${{ steps.version.outputs.VERSION }}-arm64-v8a
+          path: ${{ github.workspace }}/release/deno-${{ steps.version.outputs.VERSION }}-arm64-v8a.zip
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload x86_64 jniLibs
+        uses: actions/upload-artifact@v7
+        with:
+          name: deno-${{ steps.version.outputs.VERSION }}-x86_64
+          path: ${{ github.workspace }}/release/deno-${{ steps.version.outputs.VERSION }}-x86_64.zip
+          retention-days: 90
+          compression-level: 0
+
+      - name: Upload checksums
+        uses: actions/upload-artifact@v7
+        with:
+          name: deno-${{ steps.version.outputs.VERSION }}-SHA256SUMS
+          path: ${{ github.workspace }}/release/SHA256SUMS.txt
+          retention-days: 90
+
+      - name: Build Summary (jniLibs)
+        run: |
+          echo "## Deno JNI Libraries Built 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Artifacts:" >> $GITHUB_STEP_SUMMARY
+          cd ${{ github.workspace }}/release
+          for file in *.zip; do
+            size=$(ls -lh "$file" | awk '{print $5}')
+            echo "- \`$file\` ($size)" >> $GITHUB_STEP_SUMMARY
+          done
+
+  build_apk:
+    name: Build, Sign, and Release APK
+    needs: build_deno
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Java
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'corretto'
+          cache: 'gradle'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Resolve Deno version
+        id: version
+        run: |
+          # Mirror the same epoch-stripping logic used in the build_deno job.
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            RAW="${{ github.event.inputs.version }}"
+            VERSION="${RAW#*:}"
+          else
+            # Read from the checked-out deno gradle (kept in sync with termux).
+            VERSION=$(grep -E '^val versionMajor' deno_package/app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+)/\1/')
+            MAJOR=$VERSION
+            MINOR=$(grep -E '^val versionMinor' deno_package/app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+)/\1/')
+            PATCH=$(grep -E '^val versionPatch' deno_package/app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+)/\1/')
+            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "Deno APK version: $VERSION"
+
+      - name: Download Deno JNI Libraries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p deno_jnilibs
+          gh run download "$GITHUB_RUN_ID" \
+            --dir deno_jnilibs \
+            --name "deno-${VERSION}-arm64-v8a" \
+            --name "deno-${VERSION}-x86_64" || true
+          # Fallback: download by artifact name pattern if the above fails.
+          if [ -z "$(find deno_jnilibs -name 'deno-*.zip' 2>/dev/null)" ]; then
+            echo "Targeted download failed; downloading all deno artifacts from this run..."
+            gh api "repos/${{ github.repository }}/actions/runs/$GITHUB_RUN_ID/artifacts" \
+              --jq '.artifacts[] | select(.name | startswith("deno-")) | .name' > /tmp/artifacts.txt
+            while read -r name; do
+              [ -z "$name" ] && continue
+              gh run download "$GITHUB_RUN_ID" --dir deno_jnilibs --name "$name" || true
+            done < /tmp/artifacts.txt
+          fi
+          echo "=== Downloaded artifacts ==="
+          find deno_jnilibs -type f
+
+      - name: Extract and place JNI libraries
+        run: |
+          # Deno ships only 2 ABIs (64-bit only).
+          for arch in arm64-v8a x86_64; do
+            mkdir -p "deno_package/app/src/main/jniLibs/$arch"
+            ZIP_PATH="deno_jnilibs/deno-${VERSION}-${arch}/deno-${VERSION}-${arch}.zip"
+            if [ -f "$ZIP_PATH" ]; then
+              unzip -o "$ZIP_PATH" -d "deno_package/app/src/main/jniLibs/$arch/"
+            else
+              echo "ERROR: No zip found for $arch at $ZIP_PATH"
+              find deno_jnilibs
+              exit 1
+            fi
+          done
+          echo "=== JNI Libraries prepared ==="
+          find deno_package/app/src/main/jniLibs -type f
+
+      - name: Materialize signing keystore
+        env:
+          DENO_KEYSTORE_BASE64: ${{ secrets.DENO_KEYSTORE_BASE64 }}
+          DENO_KEYSTORE_PASSWORD: ${{ secrets.DENO_KEYSTORE_PASSWORD }}
+          DENO_KEY_ALIAS: ${{ secrets.DENO_KEY_ALIAS }}
+          DENO_KEY_PASSWORD: ${{ secrets.DENO_KEY_PASSWORD }}
+        run: |
+          if [ -z "$DENO_KEYSTORE_BASE64" ]; then
+            echo "ERROR: DENO_KEYSTORE_BASE64 secret is not set."
+            echo "Required secrets: DENO_KEYSTORE_BASE64, DENO_KEYSTORE_PASSWORD, DENO_KEY_ALIAS, DENO_KEY_PASSWORD"
+            exit 1
+          fi
+          # Decode the keystore into the deno_package root. The gradle reads
+          # signingConfig.storeFile as a path relative to deno_package/, so
+          # "deno.jks" resolves correctly.
+          echo "$DENO_KEYSTORE_BASE64" | base64 --decode > deno_package/deno.jks
+          # Write keystore.properties with the exact property names the gradle
+          # expects (deno_package/app/build.gradle.kts:35-38):
+          #   signingConfig.storeFile / storePassword / keyAlias / keyPassword
+          cat > deno_package/keystore.properties <<EOF
+          signingConfig.storeFile=deno.jks
+          signingConfig.storePassword=$DENO_KEYSTORE_PASSWORD
+          signingConfig.keyAlias=$DENO_KEY_ALIAS
+          signingConfig.keyPassword=$DENO_KEY_PASSWORD
+          EOF
+          echo "keystore.properties written (keystore size: $(wc -c < deno_package/deno.jks) bytes)"
+
+      - name: Build APK with Gradle
+        working-directory: deno_package
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Copy built APKs for release
+        run: |
+          mkdir -p apk_release
+          find deno_package/app/build/outputs/apk/release -name "*.apk" -exec cp {} apk_release/ \;
+          echo "=== APKs for release ==="
+          ls -lh apk_release/
+
+      - name: Create GitHub Release and Upload APKs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "deno-v${VERSION}" apk_release/*.apk \
+            --title "Deno Package v${VERSION}" \
+            --notes "Precompiled Deno plugin release for YTDLnis. Built from Termux deno ${VERSION} (64-bit ABIs only: arm64-v8a, x86_64)." \
+            --generate-notes || echo "Release already exists or failed to create."
+
+      - name: Build Summary (APK)
+        run: |
+          echo "## Deno APK Built 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Version:** ${VERSION}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Release APKs:" >> $GITHUB_STEP_SUMMARY
+          cd apk_release
+          for file in *.apk; do
+            size=$(ls -lh "$file" | awk '{print $5}')
+            echo "- \`$file\` ($size)" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Release tag: \`deno-v${VERSION}\`" >> $GITHUB_STEP_SUMMARY

@@ -10,6 +10,7 @@ set -e
 ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
+    "ca-certificates"
     "python"
     "quickjs-ng"
     "libandroid-support"

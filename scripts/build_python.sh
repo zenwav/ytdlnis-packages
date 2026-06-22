@@ -180,6 +180,18 @@ build_packages_from_source() {
     fi
     echo "sysconfig: $SYSCONFIG_FILE"
 
+    # The TARGET Python's sysconfigdata module. By exporting
+    # _PYTHON_SYSCONFIGDATA_NAME (and putting this dir on PYTHONPATH) the
+    # host interpreter's sysconfig/distutils reads the TARGET's config vars
+    # (EXT_SUFFIX, SOABI, INCLUDEPY, LIBDIR, CC, LDSHARED, ...) instead of
+    # the host's. This is the canonical CPython cross-compilation mechanism
+    # and is what makes the produced .so target arm/Python 3.13 with the
+    # correct extension suffix and library paths.
+    local SYSCONFIG_DIR SYSCONFIG_NAME
+    SYSCONFIG_DIR=$(dirname "$SYSCONFIG_FILE")
+    SYSCONFIG_NAME=$(basename "$SYSCONFIG_FILE" .py)
+    echo "sysconfig module: $SYSCONFIG_NAME (dir: $SYSCONFIG_DIR)"
+
     local EXT_SUFFIX SOABI
     EXT_SUFFIX=$(python3 -c "
 import re, sys
@@ -271,11 +283,13 @@ print(f'[sitecustomize] Cross-compile patches loaded: machine={_target_machine},
       f'ptr_size={_target_ptr_size}, ext_suffix={_target_ext_suffix}')
 PYEOF
 
-    # PYTHONPATH includes: patch dir (for sitecustomize.py) + nothing else.
-    # We deliberately do NOT add $SITE_PACKAGES here because the target
-    # cffi's _cffi_backend.so can't be imported on the host. Instead,
-    # we install a host cffi separately for build-time use.
-    export PYTHONPATH="${PATCH_DIR}:${PYTHONPATH:-}"
+    # PYTHONPATH includes: patch dir (for sitecustomize.py) and the target
+    # sysconfigdata dir (so _PYTHON_SYSCONFIGDATA_NAME, set below, can import
+    # the TARGET's build-time config vars). We deliberately do NOT add
+    # $SITE_PACKAGES here because the target cffi's _cffi_backend.so can't be
+    # imported on the host. Instead, we install a host cffi separately for
+    # build-time use.
+    export PYTHONPATH="${PATCH_DIR}:${SYSCONFIG_DIR}:${PYTHONPATH:-}"
 
     # --- Ensure pip is available on the host Python ---
     if ! python3 -m pip --version >/dev/null 2>&1; then
@@ -295,6 +309,20 @@ PYEOF
     # the 32-bit arch) is installed separately to $SITE_PACKAGES.
     echo "--- Installing host build dependencies ---"
     python3 -m pip install --break-system-packages --upgrade 'cffi>=2.0.0' setuptools wheel pycparser
+
+    # --- Activate cross-compilation config (AFTER host deps are installed) ---
+    # These make the host interpreter's sysconfig/distutils report the TARGET
+    # platform and read the TARGET sysconfigdata, so build_ext:
+    #   * names extensions with the target EXT_SUFFIX
+    #     (e.g. _cffi_backend.cpython-313-arm-linux-androideabi.so)
+    #   * uses the target LIBDIR/INCLUDEPY instead of the host's
+    #     /usr/lib/x86_64-linux-gnu and /usr/include/python3.12
+    # Set them here (not earlier) so the host cffi/setuptools wheels above are
+    # installed against the host's own config.
+    export _PYTHON_HOST_PLATFORM="linux-${T_MACHINE}"
+    export _PYTHON_SYSCONFIGDATA_NAME="${SYSCONFIG_NAME}"
+    echo "_PYTHON_HOST_PLATFORM=$_PYTHON_HOST_PLATFORM"
+    echo "_PYTHON_SYSCONFIGDATA_NAME=$_PYTHON_SYSCONFIGDATA_NAME"
 
     # --- Cross-compile cffi ---
     echo "--- Building cffi for ${ARCH} ---"
@@ -329,11 +357,15 @@ open(setup_path, 'w').write(content)
 print('Patched cffi setup.py')
 "
 
-    python3 -m pip install --break-system-packages --no-deps --target="$SITE_PACKAGES" "$cffi_dir"
+    # --no-build-isolation is REQUIRED: with build isolation pip spins up a
+    # fresh env that drops our PYTHONPATH (sitecustomize + target sysconfigdata)
+    # and the host cffi, so the cross-compile config would be lost and the
+    # build would silently fall back to a host (x86_64) build.
+    python3 -m pip install --break-system-packages --no-build-isolation --no-deps --target="$SITE_PACKAGES" "$cffi_dir"
 
     # --- Cross-compile pycryptodome ---
     echo "--- Building pycryptodome for ${ARCH} ---"
-    python3 -m pip install --break-system-packages --no-binary :all: --no-deps --target="$SITE_PACKAGES" pycryptodome
+    python3 -m pip install --break-system-packages --no-build-isolation --no-binary :all: --no-deps --target="$SITE_PACKAGES" pycryptodome
 
     # --- Cross-compile curl_cffi ---
     # This is the most complex part. curl_cffi's build process:
@@ -456,6 +488,7 @@ with open('${curl_cffi_dir}/libs.json') as f:
     # --- Clean up ---
     unset CC CXX AR RANLIB STRIP CFLAGS CXXFLAGS LDFLAGS LDSHARED
     unset PKG_CONFIG_PATH CPATH LIBRARY_PATH PYTHONPATH CIBW_PLATFORM
+    unset _PYTHON_HOST_PLATFORM _PYTHON_SYSCONFIGDATA_NAME
     rm -rf "$PATCH_DIR" "$CFFI_SRC_DIR"
     echo "=== Cross-compile done for $ARCH ($JNI_ARCH) ==="
 }

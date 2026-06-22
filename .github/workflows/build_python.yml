@@ -111,6 +111,12 @@ jobs:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
           CIBW_BEFORE_ALL: "make -C curl_cffi preprocess"
+          # Skip the test phase for x86_64 only. arm64-v8a passes the
+          # test phase as-is. x86_64 fails because pip can't find a
+          # cffi wheel for android_24_x86_64 on PyPI (and even if it
+          # could, the compiled _wrapper.abi3.so can't be imported on
+          # the Linux host).
+          CIBW_TEST_SKIP: ${{ matrix.cibw_arch == 'x86_64' && '*' || '' }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -154,6 +160,8 @@ jobs:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
           CIBW_ARCHS: ${{ matrix.cibw_arch }}
+          # Skip tests for x86_64 only (see curl_cffi step for rationale).
+          CIBW_TEST_SKIP: ${{ matrix.cibw_arch == 'x86_64' && '*' || '' }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -167,6 +175,8 @@ jobs:
           CIBW_PLATFORM: android
           CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
           CIBW_ARCHS: ${{ matrix.cibw_arch }}
+          # Skip tests for x86_64 only (see curl_cffi step for rationale).
+          CIBW_TEST_SKIP: ${{ matrix.cibw_arch == 'x86_64' && '*' || '' }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 

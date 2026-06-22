@@ -301,7 +301,7 @@ PYEOF
     local CFFI_SRC_DIR="/tmp/cffi_src_${ARCH}"
     rm -rf "$CFFI_SRC_DIR"
     mkdir -p "$CFFI_SRC_DIR"
-    python3 -m pip download --break-system-packages --no-binary :all: --no-deps cffi -d "$CFFI_SRC_DIR"
+    python3 -m pip download --no-binary :all: --no-deps cffi -d "$CFFI_SRC_DIR"
     tar -xf "$CFFI_SRC_DIR"/cffi-*.tar.gz -C "$CFFI_SRC_DIR"
     local cffi_dir
     cffi_dir=$(ls -d "${CFFI_SRC_DIR}/cffi-"*/)
@@ -367,7 +367,7 @@ print('Patched cffi setup.py')
         local CURL_CFFI_SRC_DIR="/tmp/curl_cffi_src_${ARCH}"
         rm -rf "$CURL_CFFI_SRC_DIR"
         mkdir -p "$CURL_CFFI_SRC_DIR"
-        python3 -m pip download --break-system-packages --no-binary :all: --no-deps curl_cffi -d "$CURL_CFFI_SRC_DIR"
+        python3 -m pip download --no-binary :all: --no-deps curl_cffi -d "$CURL_CFFI_SRC_DIR"
         tar -xf "$CURL_CFFI_SRC_DIR"/curl_cffi-*.tar.gz -C "$CURL_CFFI_SRC_DIR"
         local curl_cffi_dir
         curl_cffi_dir=$(ls -d "${CURL_CFFI_SRC_DIR}/curl_cffi-"*/)

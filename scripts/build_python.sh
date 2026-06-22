@@ -280,6 +280,43 @@ def _patched_calcsize(fmt, *a, **kw):
     return _orig_calcsize(fmt, *a, **kw)
 _struct.calcsize = _patched_calcsize
 
+# --- Bypass setuptools/bdist_wheel cross-compilation tag assertion ---
+# We build wheels on a host interpreter (CPython 3.12 / x86_64) for a different
+# target (CPython 3.13 / arm). setuptools' bdist_wheel.get_tag() asserts the
+# computed tag is in the *host* interpreter's supported tags, which is never
+# true when cross-compiling, e.g.:
+#   AssertionError: would build wheel with unsupported tag ('cp312','cp313','linux_armv7l')
+# The wheel tag is irrelevant for our flow: we only extract the (correctly
+# named) target .so from the install dir. So we wrap get_tag to swallow that
+# AssertionError and return a tag derived from the patched EXT_SUFFIX.
+def _patch_bdist_wheel_tag():
+    try:
+        from setuptools.command import bdist_wheel as _bw
+    except Exception:
+        return
+    cls = _bw.bdist_wheel
+    if getattr(cls, '_xcompile_tag_patched', False):
+        return
+    _orig_get_tag = cls.get_tag
+    def get_tag(self):
+        try:
+            return _orig_get_tag(self)
+        except AssertionError:
+            plat = (self.plat_name or _target_machine)
+            plat = plat.lower().replace('-', '_').replace('.', '_').replace(' ', '_')
+            impl, abi = 'cp3', 'none'
+            for part in _target_ext_suffix.split('.'):
+                if part.startswith('cpython-'):
+                    ver = part.split('-')[1]
+                    impl, abi = 'cp' + ver, 'cp' + ver
+                    break
+            print('[sitecustomize] cross-compile wheel tag forced to '
+                  + repr((impl, abi, plat)))
+            return (impl, abi, plat)
+    cls.get_tag = get_tag
+    cls._xcompile_tag_patched = True
+_patch_bdist_wheel_tag()
+
 print(f'[sitecustomize] Cross-compile patches loaded: machine={_target_machine}, '
       f'ptr_size={_target_ptr_size}, ext_suffix={_target_ext_suffix}')
 PYEOF

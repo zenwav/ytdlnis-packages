@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # PHASE 1 - BUILD
-ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
+ARCHITECTURES=("aarch64" "x86_64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=("deno" "libandroid-support" "libandroid-stub" "libffi" "libsqlite" "zlib")
 
@@ -18,8 +18,14 @@ for ARCH in "${ARCHITECTURES[@]}"; do
 done
 
 # PHASE 2 - EXTRACTION
-# Use absolute path for jniLibs to avoid variable confusion
-JNI_OUT_DIR="${PWD}/jniLibs"
+# NOTE: Output must live under output/ (not the repo root). Termux's
+# restricted AppArmor profile (scripts/profile-restricted.apparmor,
+# added 2026-02-25) denies writes to anything under the bind-mounted
+# repo root except output/**:
+#   deny /home/builder/termux-packages/[^o]** wlk,
+#   allow /home/builder/termux-packages/output/** rw,
+# Creating jniLibs/ at the root therefore fails with "Permission denied".
+JNI_OUT_DIR="${OUTPUT_BASE_DIR}/jniLibs"
 mkdir -p "$JNI_OUT_DIR"
 
 for ARCH in "${ARCHITECTURES[@]}"; do

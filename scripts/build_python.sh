@@ -10,6 +10,7 @@ set -e
 ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
 OUTPUT_BASE_DIR="${PWD}/output"
 packages=(
+    "ca-certificates"
     "python"
     "quickjs-ng"
     "libandroid-support"
@@ -317,19 +318,24 @@ PYEOF
     echo "--- Installing host build dependencies ---"
     python3 -m pip install --break-system-packages --upgrade 'cffi>=2.0.0' setuptools wheel pycparser
 
-    # --- Activate cross-compilation config (AFTER host deps are installed) ---
-    # These make the host interpreter's sysconfig/distutils report the TARGET
-    # platform and read the TARGET sysconfigdata, so build_ext:
+    # --- Cross-compilation config (applied per-command, NOT exported) ---
+    # These env vars make the host interpreter's sysconfig/distutils report the
+    # TARGET platform and read the TARGET sysconfigdata, so build_ext:
     #   * names extensions with the target EXT_SUFFIX
     #     (e.g. _cffi_backend.cpython-313-arm-linux-androideabi.so)
     #   * uses the target LIBDIR/INCLUDEPY instead of the host's
     #     /usr/lib/x86_64-linux-gnu and /usr/include/python3.12
-    # Set them here (not earlier) so the host cffi/setuptools wheels above are
-    # installed against the host's own config.
-    export _PYTHON_HOST_PLATFORM="linux-${T_MACHINE}"
-    export _PYTHON_SYSCONFIGDATA_NAME="${SYSCONFIG_NAME}"
-    echo "_PYTHON_HOST_PLATFORM=$_PYTHON_HOST_PLATFORM"
-    echo "_PYTHON_SYSCONFIGDATA_NAME=$_PYTHON_SYSCONFIGDATA_NAME"
+    #
+    # CRITICAL: we DO NOT export these globally. They are applied only as an
+    # inline prefix on the actual build commands, which run with
+    # --no-build-isolation and therefore inherit our PYTHONPATH (where the
+    # sysconfigdata module lives). `pip download` and isolated build steps use
+    # build isolation, which STRIPS PYTHONPATH but KEEPS env vars; a global
+    # _PYTHON_SYSCONFIGDATA_NAME there makes the isolated interpreter fail with:
+    #   ModuleNotFoundError: No module named '_sysconfigdata__android_...'
+    local CROSS_HOST_PLATFORM="linux-${T_MACHINE}"
+    echo "cross-build _PYTHON_HOST_PLATFORM=$CROSS_HOST_PLATFORM"
+    echo "cross-build _PYTHON_SYSCONFIGDATA_NAME=$SYSCONFIG_NAME"
 
     # --- Cross-compile cffi ---
     echo "--- Building cffi for ${ARCH} ---"
@@ -364,15 +370,18 @@ open(setup_path, 'w').write(content)
 print('Patched cffi setup.py')
 "
 
-    # --no-build-isolation is REQUIRED: with build isolation pip spins up a
-    # fresh env that drops our PYTHONPATH (sitecustomize + target sysconfigdata)
-    # and the host cffi, so the cross-compile config would be lost and the
-    # build would silently fall back to a host (x86_64) build.
-    python3 -m pip install --break-system-packages --no-build-isolation --no-deps --target="$SITE_PACKAGES" "$cffi_dir"
+    # The inline _PYTHON_* prefix activates cross config for THIS command only.
+    # --no-build-isolation is REQUIRED so the build runs in the host env and
+    # inherits our PYTHONPATH (sitecustomize + target sysconfigdata) and the
+    # host cffi; otherwise the cross config is lost and the build silently
+    # falls back to a host (x86_64) build.
+    _PYTHON_HOST_PLATFORM="$CROSS_HOST_PLATFORM" _PYTHON_SYSCONFIGDATA_NAME="$SYSCONFIG_NAME" \
+        python3 -m pip install --break-system-packages --no-build-isolation --no-deps --target="$SITE_PACKAGES" "$cffi_dir"
 
     # --- Cross-compile pycryptodome ---
     echo "--- Building pycryptodome for ${ARCH} ---"
-    python3 -m pip install --break-system-packages --no-build-isolation --no-binary :all: --no-deps --target="$SITE_PACKAGES" pycryptodome
+    _PYTHON_HOST_PLATFORM="$CROSS_HOST_PLATFORM" _PYTHON_SYSCONFIGDATA_NAME="$SYSCONFIG_NAME" \
+        python3 -m pip install --break-system-packages --no-build-isolation --no-binary :all: --no-deps --target="$SITE_PACKAGES" pycryptodome
 
     # --- Cross-compile curl_cffi ---
     # This is the most complex part. curl_cffi's build process:
@@ -469,8 +478,9 @@ with open('${curl_cffi_dir}/libs.json') as f:
         # Install curl_cffi with --no-build-isolation so it uses the host
         # cffi (installed above) for code generation instead of creating
         # an isolated build env that would install a different cffi.
-        # The cross-compiler (CC) and patched EXT_SUFFIX ensure the
-        # compiled _wrapper.so targets the 32-bit arch.
+        # The inline _PYTHON_* prefix + cross-compiler (CC) ensure the
+        # compiled _wrapper.so targets the 32-bit arch with the right suffix.
+        _PYTHON_HOST_PLATFORM="$CROSS_HOST_PLATFORM" _PYTHON_SYSCONFIGDATA_NAME="$SYSCONFIG_NAME" \
         python3 -m pip install --break-system-packages --no-build-isolation --no-deps \
             --target="$SITE_PACKAGES" "$curl_cffi_dir"
 
@@ -493,9 +503,10 @@ with open('${curl_cffi_dir}/libs.json') as f:
     done
 
     # --- Clean up ---
+    # Note: _PYTHON_HOST_PLATFORM / _PYTHON_SYSCONFIGDATA_NAME are applied
+    # inline per-command (never exported), so there is nothing to unset here.
     unset CC CXX AR RANLIB STRIP CFLAGS CXXFLAGS LDFLAGS LDSHARED
     unset PKG_CONFIG_PATH CPATH LIBRARY_PATH PYTHONPATH CIBW_PLATFORM
-    unset _PYTHON_HOST_PLATFORM _PYTHON_SYSCONFIGDATA_NAME
     rm -rf "$PATCH_DIR" "$CFFI_SRC_DIR"
     echo "=== Cross-compile done for $ARCH ($JNI_ARCH) ==="
 }

@@ -16,15 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # IMPORTANT: cibuildwheel's Android platform only supports
-          # arm64_v8a and x86_64 (see ANDROID_TRIPLET in
-          # cibuildwheel/platforms/android.py). 32-bit ABIs
-          # (armeabi_v7a, x86) are NOT supported by cibuildwheel and
-          # cannot be built here. They are handled inside the Termux
-          # docker via cross-compilation in build_python.sh instead.
-          #
-          # termux_binary: Termux apt repo binary-<arch> subdir used to
-          #                fetch the prebuilt libffi deb for cffi
+          # 64-bit ABIs only — cibuildwheel's Android platform only
+          # supports arm64_v8a and x86_64 (see ANDROID_TRIPLET in
+          # cibuildwheel/platforms/android.py). 32-bit ABIs are handled
+          # by build_libcurl_impersonate_32bit + cross-compilation.
           - jni_arch: arm64-v8a
             cibw_arch: arm64_v8a
             termux_binary: binary-aarch64
@@ -77,7 +72,6 @@ jobs:
           path = 'curl_cffi/libs.json'
           with open(path) as f:
               archs = json.load(f)
-          # Check if the Android x86_64 entry already exists.
           exists = any(
               a.get('system') == 'Android' and a.get('machine') == 'x86_64'
               for a in archs
@@ -123,33 +117,20 @@ jobs:
       - name: Build cffi Wheel
         run: |
           pip install cibuildwheel==3.3.1
-          # Download and extract libffi deb package from the Termux
-          # repository for THIS matrix arch. The repo layout is:
-          #   .../dists/stable/main/binary-<arch>/Packages
-          # and the per-arch deb lives under the same tree.
           curl -L -o packages.txt "https://packages-cf.termux.org/apt/termux-main/dists/stable/main/${{ matrix.termux_binary }}/Packages"
           libffi_path=$(grep -A 10 "Package: libffi$" packages.txt | grep "Filename: " | cut -d' ' -f2)
           curl -L -o libffi.deb "https://packages-cf.termux.org/apt/termux-main/$libffi_path"
 
-          # Download and unpack cffi source
           pip download --no-binary :all: --no-deps cffi
           tar -xf cffi-*.tar.gz
           cffi_dir=$(ls -d cffi-*/)
 
-          # Extract libffi inside the cffi project folder
           mkdir -p "$cffi_dir/libffi_extracted"
           dpkg-deb -x libffi.deb "$cffi_dir/libffi_extracted"
 
-          # Resolve the ABSOLUTE host path to the extracted libffi.
-          # NOTE: cibuildwheel's Android platform builds directly on the host
-          # runner (NOT inside a Docker container), so the package lives at
-          # $GITHUB_WORKSPACE/<cffi_dir>, not at /project. Hardcoding /project
-          # here makes the compiler look for ffi.h in a path that does not exist,
-          # which is exactly the "fatal error: 'ffi.h' file not found" we saw.
           LIBFFI_PREFIX="${PWD%/}/${cffi_dir%/}/libffi_extracted/data/data/com.termux/files/usr"
           export LIBFFI_PREFIX
 
-          # Patch cffi's setup.py to use the extracted libffi paths directly
           python -c "
           import os
           setup_path = os.path.join('$cffi_dir', 'setup.py')
@@ -168,7 +149,6 @@ jobs:
           print('setup.py patched successfully! libffi prefix:', prefix)
           "
 
-          # Build cffi using cibuildwheel
           cibuildwheel "$cffi_dir" --output-dir wheelhouse
         env:
           CIBW_PLATFORM: android
@@ -196,9 +176,157 @@ jobs:
           name: curl_cffi-android-wheels-${{ matrix.jni_arch }}
           path: wheelhouse/*.whl
 
+  build_libcurl_impersonate_32bit:
+    name: Build libcurl-impersonate (${{ matrix.jni_arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 32-bit ABIs — cibuildwheel cannot produce these, so we
+          # build libcurl-impersonate from source using the NDK and
+          # then cross-compile curl_cffi against it inside the Termux
+          # docker in build_python.sh.
+          #
+          # ndk_abi         : CMAKE_ANDROID_ARCH_ABI value
+          # compiler_prefix : NDK clang prefix (API level appended)
+          # curl_arch       : value used in curl_cffi libs.json "arch" field
+          # target_machine  : value used in curl_cffi libs.json "machine" field
+          #                   (must match what platform.uname().machine returns
+          #                    on the target — we patch it via sitecustomize.py)
+          - jni_arch: armeabi-v7a
+            ndk_abi: armeabi-v7a
+            compiler_prefix: armv7a-linux-androideabi
+            curl_arch: arm
+            target_machine: armv7l
+          - jni_arch: x86
+            ndk_abi: x86
+            compiler_prefix: i686-linux-android
+            curl_arch: i386
+            target_machine: i686
+    steps:
+      - name: Checkout curl-impersonate repository
+        uses: actions/checkout@v7
+        with:
+          repository: lexiforest/curl-impersonate
+          path: curl-impersonate
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config cmake ninja-build \
+            curl autoconf automake libtool gperf golang-go
+
+      - name: Build libcurl-impersonate
+        working-directory: curl-impersonate
+        env:
+          NDK: ${{ steps.setup-ndk.outputs.ndk-path }}
+          API: "24"
+          TARGET: ${{ matrix.compiler_prefix }}
+          ANDROID_ABI: ${{ matrix.ndk_abi }}
+        run: |
+          set -ex
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+
+          export AR="$TOOLCHAIN/bin/llvm-ar"
+          export CC="$TOOLCHAIN/bin/${TARGET}${API}-clang"
+          export AS="$TOOLCHAIN/bin/${TARGET}${API}-clang"
+          export CXX="$TOOLCHAIN/bin/${TARGET}${API}-clang++"
+          export RANLIB="$TOOLCHAIN/bin/llvm-ranlib"
+          export STRIP="$TOOLCHAIN/bin/llvm-strip"
+          export ANDROID_NDK_HOME="$NDK"
+          export CFLAGS="-fPIC"
+          export CXXFLAGS="-fPIC"
+
+          install_dir="$PWD/install"
+          mkdir -p "$install_dir"
+
+          cmake_args="-G Ninja -DCMAKE_INSTALL_PREFIX=$install_dir"
+          cmake_args="$cmake_args -DCMAKE_SYSTEM_NAME=Android"
+          cmake_args="$cmake_args -DCMAKE_ANDROID_NDK=${ANDROID_NDK_HOME}"
+          cmake_args="$cmake_args -DCMAKE_ANDROID_ARCH_ABI=${ANDROID_ABI}"
+          cmake_args="$cmake_args -DCMAKE_SYSTEM_VERSION=${API}"
+
+          # Configure and build
+          make configure BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+          make build BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+
+          # Install (skip checkbuild — it tries to run the binary which
+          # is cross-compiled and can't execute on the host)
+          make install-strip BUILD_DIR=build CMAKE_CONFIGURE_ARGS="$cmake_args"
+
+          # --- Merge all static libs into a single libcurl-impersonate.a ---
+          install_lib_dir="$install_dir/lib"
+          deps_lib_dir="$PWD/build/deps/install/lib"
+
+          # Copy dependency static libs
+          for lib in libz.a libzstd.a libbrotlidec.a libbrotlicommon.a \
+                     libbrotlienc.a libnghttp2.a libnghttp3.a libngtcp2.a \
+                     libngtcp2_crypto_boringssl.a libssl.a libcrypto.a; do
+              if [ -f "$deps_lib_dir/$lib" ]; then
+                  cp "$deps_lib_dir/$lib" "$install_lib_dir/"
+              else
+                  echo "WARNING: $lib not found in $deps_lib_dir"
+              fi
+          done
+
+          # Merge using the cross-compiler's -r flag (relocatable link)
+          cd "$install_lib_dir"
+          if [ -f libcurl-impersonate.a ]; then
+              mv libcurl-impersonate.a libcurl-impersonate.orig.a
+          fi
+
+          lib_list=""
+          for lib in libcurl-impersonate.orig.a libz.a libzstd.a \
+                     libbrotlidec.a libbrotlicommon.a libbrotlienc.a \
+                     libnghttp2.a libnghttp3.a libngtcp2.a \
+                     libngtcp2_crypto_boringssl.a libssl.a libcrypto.a; do
+              if [ -f "$lib" ]; then
+                  lib_list="$lib_list $lib"
+              fi
+          done
+
+          echo "Merging: $lib_list"
+          $CC -r -o libcurl-impersonate.full.o \
+              -Wl,--whole-archive $lib_list -Wl,--no-whole-archive
+          $AR rcs libcurl-impersonate.a libcurl-impersonate.full.o
+          rm -f libcurl-impersonate.full.o
+
+          # Clean up intermediate libs (keep only the merged .a and headers)
+          rm -f libcurl-impersonate.orig.a libz.a libzstd.a libbrotlidec.a \
+                libbrotlicommon.a libbrotlienc.a libnghttp2.a libnghttp3.a \
+                libngtcp2.a libngtcp2_crypto_boringssl.a libssl.a libcrypto.a
+
+          echo "=== Final install dir ==="
+          find "$install_dir" -type f | head -50
+
+          # Create tarball with lib/ and include/
+          cd "$install_dir"
+          tar czf "$GITHUB_WORKSPACE/libcurl-impersonate-${{ matrix.jni_arch }}.tar.gz" \
+              lib/ include/
+
+          echo "=== Tarball contents ==="
+          tar tzf "$GITHUB_WORKSPACE/libcurl-impersonate-${{ matrix.jni_arch }}.tar.gz" | head -20
+
+      - name: Upload libcurl-impersonate (${{ matrix.jni_arch }})
+        uses: actions/upload-artifact@v7
+        with:
+          name: libcurl-impersonate-${{ matrix.jni_arch }}
+          path: libcurl-impersonate-${{ matrix.jni_arch }}.tar.gz
+          retention-days: 30
+
   build_python:
     name: Build Python Environment
-    needs: build_curl_cffi
+    needs: [build_curl_cffi, build_libcurl_impersonate_32bit]
+    # Run even if some upstream matrix rows failed — the script handles
+    # missing artifacts gracefully (skips curl_cffi for that arch).
+    if: always()
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -207,27 +335,24 @@ jobs:
       - name: Checkout termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages
 
-      - name: Download curl_cffi wheels (64-bit ABIs only)
+      - name: Download curl_cffi wheels (64-bit ABIs)
         uses: actions/download-artifact@v8
         with:
-          # Only arm64-v8a and x86_64 wheels exist (cibuildwheel
-          # limitation). 32-bit ABIs are built from source inside
-          # the Termux docker by build_python.sh.
           pattern: curl_cffi-android-wheels-*
           merge-multiple: true
           path: curl_cffi_wheels_downloaded
 
-      - name: Prepare Wheels Directory
+      - name: Download libcurl-impersonate (32-bit ABIs)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: libcurl-impersonate-*
+          merge-multiple: true
+          path: libcurl_impersonate_downloaded
+
+      - name: Prepare Wheels and Libraries Directory
         run: |
-          # cibuildwheel names Android wheels with a platform tag of the
-          # form "android_<cibw_arch>", e.g.:
-          #   curl_cffi-0.7.4-cp313-cp313-android_arm64_v8a.whl
-          #   cffi-1.17.1-cp313-cp313-android_x86_64.whl
-          #
-          # We sort each wheel into the matching jniLibs arch folder.
-          # Only arm64-v8a and x86_64 folders will receive wheels; the
-          # armeabi-v7a and x86 folders remain empty and are handled
-          # by build_python.sh's cross-compile fallback.
+          # --- Route 64-bit wheels to their arch folders ---
           declare -A abi_map=(
             [arm64-v8a]=arm64_v8a
             [x86_64]=x86_64
@@ -236,42 +361,58 @@ jobs:
           for jni_arch in "${!abi_map[@]}"; do
             mkdir -p "termux-packages/curl_cffi_wheels/$jni_arch"
           done
-          # Also create empty dirs for 32-bit so the script knows to
-          # fall back to cross-compilation.
+          # Create dirs for 32-bit too (will be empty — handled by cross-compile)
           mkdir -p "termux-packages/curl_cffi_wheels/armeabi-v7a"
           mkdir -p "termux-packages/curl_cffi_wheels/x86"
 
-          # Walk every downloaded wheel and route it to the right arch.
-          # IMPORTANT: check x86_64 BEFORE x86, because "android_x86" is
-          # a substring of "android_x86_64" and would otherwise mis-route
-          # the 64-bit wheel into the 32-bit folder.
           for whl in curl_cffi_wheels_downloaded/*.whl; do
             [[ -f "$whl" ]] || continue
             name=$(basename "$whl")
-            matched=0
-            for jni_arch in arm64-v8a x86_64 x86; do
-              if [[ -z "${abi_map[$jni_arch]:-}" ]]; then
-                continue
-              fi
+            for jni_arch in arm64-v8a x86_64; do
               cibw_tag="android_${abi_map[$jni_arch]}"
               if [[ "$name" == *"$cibw_tag"* ]]; then
                 cp "$whl" "termux-packages/curl_cffi_wheels/$jni_arch/"
                 echo "Routed $name -> $jni_arch"
-                matched=1
                 break
               fi
             done
-            if [[ "$matched" -eq 0 ]]; then
-              echo "Warning: Could not classify wheel $name"
+          done
+
+          # --- Route 32-bit libcurl-impersonate tarballs to their arch folders ---
+          mkdir -p "termux-packages/libcurl_impersonate/armeabi-v7a"
+          mkdir -p "termux-packages/libcurl_impersonate/x86"
+
+          for tarball in libcurl_impersonate_downloaded/*.tar.gz; do
+            [[ -f "$tarball" ]] || continue
+            name=$(basename "$tarball")
+            if echo "$name" | grep -q "armeabi-v7a"; then
+              cp "$tarball" "termux-packages/libcurl_impersonate/armeabi-v7a/"
+              echo "Routed $name -> armeabi-v7a"
+            elif echo "$name" | grep -q "x86"; then
+              # Match x86 but NOT x86_64 (already filtered by download, but be safe)
+              if ! echo "$name" | grep -q "x86_64"; then
+                cp "$tarball" "termux-packages/libcurl_impersonate/x86/"
+                echo "Routed $name -> x86"
+              fi
             fi
           done
 
           echo "=== Wheels prepared ==="
           find termux-packages/curl_cffi_wheels -type f | sort
-          echo "=== Folders (empty = will be cross-compiled) ==="
+          echo ""
+          echo "=== Wheels per arch ==="
           for d in termux-packages/curl_cffi_wheels/*/; do
             count=$(find "$d" -name '*.whl' | wc -l)
             echo "  $d: $count wheel(s)"
+          done
+          echo ""
+          echo "=== libcurl-impersonate prepared ==="
+          find termux-packages/libcurl_impersonate -type f | sort
+          echo ""
+          echo "=== libcurl-impersonate per arch ==="
+          for d in termux-packages/libcurl_impersonate/*/; do
+            count=$(find "$d" -name '*.tar.gz' | wc -l)
+            echo "  $d: $count tarball(s)"
           done
 
       - name: Prepare build scripts
@@ -314,12 +455,10 @@ jobs:
 
           cd termux-packages/output/jniLibs
 
-          # Package each architecture
           for arch in arm64-v8a armeabi-v7a x86 x86_64; do
             if [ -d "$arch" ]; then
               echo "Packaging $arch..."
 
-              # Verify required files exist
               if [ ! -f "$arch/libpython.so" ]; then
                 echo "ERROR: libpython.so not found in $arch"
                 exit 1
@@ -329,7 +468,6 @@ jobs:
                 exit 1
               fi
 
-              # Create zip: python-VERSION-ARCH.zip
               ZIP_NAME="python-${VERSION}-${arch}.zip"
               cd "$arch"
               zip -9 "$RELEASE_DIR/$ZIP_NAME" *
@@ -342,7 +480,6 @@ jobs:
             fi
           done
 
-          # List all created packages
           echo ""
           echo "=== Release Packages ==="
           ls -lh "$RELEASE_DIR/"
@@ -404,12 +541,12 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### ABI Coverage" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| ABI | curl_cffi | cffi | pycryptodome |" >> $GITHUB_STEP_SUMMARY
-          echo "|-----|-----------|------|--------------|" >> $GITHUB_STEP_SUMMARY
-          echo "| arm64-v8a | cibuildwheel | cibuildwheel | cibuildwheel |" >> $GITHUB_STEP_SUMMARY
-          echo "| x86_64 | cibuildwheel | cibuildwheel | cibuildwheel |" >> $GITHUB_STEP_SUMMARY
-          echo "| armeabi-v7a | N/A (no prebuilt libcurl-impersonate) | cross-compiled | cross-compiled |" >> $GITHUB_STEP_SUMMARY
-          echo "| x86 | N/A (no prebuilt libcurl-impersonate) | cross-compiled | cross-compiled |" >> $GITHUB_STEP_SUMMARY
+          echo "| ABI | curl_cffi | cffi | pycryptodome | Method |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-----------|------|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| arm64-v8a | yes | yes | yes | cibuildwheel |" >> $GITHUB_STEP_SUMMARY
+          echo "| x86_64 | yes | yes | yes | cibuildwheel |" >> $GITHUB_STEP_SUMMARY
+          echo "| armeabi-v7a | yes | yes | yes | libcurl-impersonate from source + NDK cross-compile |" >> $GITHUB_STEP_SUMMARY
+          echo "| x86 | yes | yes | yes | libcurl-impersonate from source + NDK cross-compile |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Artifacts Created:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

@@ -232,10 +232,10 @@ jobs:
 
       - name: Materialize signing keystore
         env:
-          DENO_KEYSTORE_BASE64: ${{ secrets.DENO_KEYSTORE_BASE64 }}
-          DENO_KEYSTORE_PASSWORD: ${{ secrets.DENO_KEYSTORE_PASSWORD }}
-          DENO_KEY_ALIAS: ${{ secrets.DENO_KEY_ALIAS }}
-          DENO_KEY_PASSWORD: ${{ secrets.DENO_KEY_PASSWORD }}
+          DENO_KEYSTORE_BASE64: ${{ secrets.YTDLNIS_KEYSTORE_BASE64 }}
+          DENO_KEYSTORE_PASSWORD: ${{ secrets.YTDLNIS_KEYSTORE_PASSWORD }}
+          DENO_KEY_ALIAS: ${{ secrets.YTDLNIS_KEY_ALIAS }}
+          DENO_KEY_PASSWORD: ${{ secrets.YTDLNIS_KEY_PASSWORD }}
         run: |
           if [ -z "$DENO_KEYSTORE_BASE64" ]; then
             echo "ERROR: DENO_KEYSTORE_BASE64 secret is not set."

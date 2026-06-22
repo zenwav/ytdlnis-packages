@@ -16,25 +16,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # termux_arch : arch name used by Termux's build-package.sh
-          # jni_arch    : Android JNI lib folder name
-          # cibw_arch   : cibuildwheel Android arch identifier
+          # IMPORTANT: cibuildwheel's Android platform only supports
+          # arm64_v8a and x86_64 (see ANDROID_TRIPLET in
+          # cibuildwheel/platforms/android.py). 32-bit ABIs
+          # (armeabi_v7a, x86) are NOT supported by cibuildwheel and
+          # cannot be built here. They are handled inside the Termux
+          # docker via cross-compilation in build_python.sh instead.
+          #
           # termux_binary: Termux apt repo binary-<arch> subdir used to
           #                fetch the prebuilt libffi deb for cffi
-          - termux_arch: aarch64
-            jni_arch: arm64-v8a
+          - jni_arch: arm64-v8a
             cibw_arch: arm64_v8a
             termux_binary: binary-aarch64
-          - termux_arch: arm
-            jni_arch: armeabi-v7a
-            cibw_arch: armeabi_v7a
-            termux_binary: binary-arm
-          - termux_arch: i686
-            jni_arch: x86
-            cibw_arch: x86
-            termux_binary: binary-i686
-          - termux_arch: x86_64
-            jni_arch: x86_64
+          - jni_arch: x86_64
             cibw_arch: x86_64
             termux_binary: binary-x86_64
     steps:
@@ -67,6 +61,53 @@ jobs:
         uses: docker/setup-qemu-action@v4
         with:
           platforms: all
+
+      - name: Patch curl_cffi libs.json for x86_64 Android
+        # curl_cffi's libs.json only contains an Android/aarch64 entry.
+        # When building for x86_64, detect_arch() in scripts/build.py
+        # raises "Unsupported arch" because there is no matching entry.
+        # We add an Android/x86_64 entry that mirrors the aarch64 one,
+        # pointing at the x86_64-linux-android libcurl-impersonate
+        # release tarball (which does exist in the curl-impersonate
+        # GitHub releases).
+        if: matrix.cibw_arch == 'x86_64'
+        run: |
+          python3 -c "
+          import json
+          path = 'curl_cffi/libs.json'
+          with open(path) as f:
+              archs = json.load(f)
+          # Check if the Android x86_64 entry already exists.
+          exists = any(
+              a.get('system') == 'Android' and a.get('machine') == 'x86_64'
+              for a in archs
+          )
+          if not exists:
+              new_entry = {
+                  'system': 'Android',
+                  'machine': 'x86_64',
+                  'pointer_size': 64,
+                  'sysname': 'linux-android',
+                  'link_type': 'static',
+                  'libc': 'android',
+                  'obj_name': 'libcurl-impersonate.a',
+                  'arch': 'x86_64',
+              }
+              archs.append(new_entry)
+              with open(path, 'w') as f:
+                  json.dump(archs, f, indent=2)
+              print('Added Android/x86_64 entry to libs.json')
+          else:
+              print('Android/x86_64 entry already present')
+          "
+          echo "=== Updated libs.json (Android entries) ==="
+          python3 -c "
+          import json
+          with open('curl_cffi/libs.json') as f:
+              for a in json.load(f):
+                  if a.get('system') == 'Android':
+                      print(json.dumps(a, indent=2))
+          "
 
       - name: Build curl_cffi Wheel
         uses: pypa/cibuildwheel@v3.3.1
@@ -114,7 +155,7 @@ jobs:
           setup_path = os.path.join('$cffi_dir', 'setup.py')
           prefix = os.environ['LIBFFI_PREFIX']
           content = open(setup_path).read()
-          old_inc = \"include_dirs = ['/usr/include/ffi',\\n                '/usr/include/libffi']\"
+          old_inc = \"include_dirs = ['/usr/include/ffi',\n                '/usr/include/libffi']\"
           new_inc = \"include_dirs = [\" + repr(prefix + '/include') + \"]\"
           assert old_inc in content, 'include_dirs pattern not found in setup.py'
           content = content.replace(old_inc, new_inc)
@@ -166,11 +207,12 @@ jobs:
       - name: Checkout termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages
 
-      - name: Download curl_cffi wheels (all ABIs)
+      - name: Download curl_cffi wheels (64-bit ABIs only)
         uses: actions/download-artifact@v8
         with:
-          # Match every per-arch wheel artifact produced by the
-          # build_curl_cffi matrix and merge them into a single folder.
+          # Only arm64-v8a and x86_64 wheels exist (cibuildwheel
+          # limitation). 32-bit ABIs are built from source inside
+          # the Termux docker by build_python.sh.
           pattern: curl_cffi-android-wheels-*
           merge-multiple: true
           path: curl_cffi_wheels_downloaded
@@ -180,23 +222,24 @@ jobs:
           # cibuildwheel names Android wheels with a platform tag of the
           # form "android_<cibw_arch>", e.g.:
           #   curl_cffi-0.7.4-cp313-cp313-android_arm64_v8a.whl
-          #   cffi-1.17.1-cp313-cp313-android_armeabi_v7a.whl
-          #   pycryptodome-3.21.0-cp313-cp313-android_x86.whl
           #   cffi-1.17.1-cp313-cp313-android_x86_64.whl
           #
-          # We sort each wheel into the matching jniLibs arch folder so
-          # build_python.sh can inject it during packaging.
+          # We sort each wheel into the matching jniLibs arch folder.
+          # Only arm64-v8a and x86_64 folders will receive wheels; the
+          # armeabi-v7a and x86 folders remain empty and are handled
+          # by build_python.sh's cross-compile fallback.
           declare -A abi_map=(
             [arm64-v8a]=arm64_v8a
-            [armeabi-v7a]=armeabi_v7a
             [x86_64]=x86_64
-            [x86]=x86
           )
 
-          # Create a wheel folder per JNI arch.
           for jni_arch in "${!abi_map[@]}"; do
             mkdir -p "termux-packages/curl_cffi_wheels/$jni_arch"
           done
+          # Also create empty dirs for 32-bit so the script knows to
+          # fall back to cross-compilation.
+          mkdir -p "termux-packages/curl_cffi_wheels/armeabi-v7a"
+          mkdir -p "termux-packages/curl_cffi_wheels/x86"
 
           # Walk every downloaded wheel and route it to the right arch.
           # IMPORTANT: check x86_64 BEFORE x86, because "android_x86" is
@@ -206,7 +249,10 @@ jobs:
             [[ -f "$whl" ]] || continue
             name=$(basename "$whl")
             matched=0
-            for jni_arch in arm64-v8a armeabi-v7a x86_64 x86; do
+            for jni_arch in arm64-v8a x86_64 x86; do
+              if [[ -z "${abi_map[$jni_arch]:-}" ]]; then
+                continue
+              fi
               cibw_tag="android_${abi_map[$jni_arch]}"
               if [[ "$name" == *"$cibw_tag"* ]]; then
                 cp "$whl" "termux-packages/curl_cffi_wheels/$jni_arch/"
@@ -220,17 +266,13 @@ jobs:
             fi
           done
 
-          # Download pure-python wheels (ABI-independent) into every arch
-          # folder so build_python.sh finds them regardless of which arch
-          # it is currently packaging.
-          for jni_arch in arm64-v8a armeabi-v7a x86 x86_64; do
-            pip download --only-binary=:all: --no-deps \
-              --dest "termux-packages/curl_cffi_wheels/$jni_arch" \
-              mutagen certifi
-          done
-
           echo "=== Wheels prepared ==="
           find termux-packages/curl_cffi_wheels -type f | sort
+          echo "=== Folders (empty = will be cross-compiled) ==="
+          for d in termux-packages/curl_cffi_wheels/*/; do
+            count=$(find "$d" -name '*.whl' | wc -l)
+            echo "  $d: $count wheel(s)"
+          done
 
       - name: Prepare build scripts
         run: |
@@ -359,7 +401,15 @@ jobs:
           echo "**Version:** ${{ steps.version.outputs.VERSION }}" >> $GITHUB_STEP_SUMMARY
           echo "**Trigger:** Manual trigger (workflow_dispatch)" >> $GITHUB_STEP_SUMMARY
           echo "**Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
-          echo "**ABIs:** arm64-v8a, armeabi-v7a, x86, x86_64" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### ABI Coverage" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| ABI | curl_cffi | cffi | pycryptodome |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----|-----------|------|--------------|" >> $GITHUB_STEP_SUMMARY
+          echo "| arm64-v8a | cibuildwheel | cibuildwheel | cibuildwheel |" >> $GITHUB_STEP_SUMMARY
+          echo "| x86_64 | cibuildwheel | cibuildwheel | cibuildwheel |" >> $GITHUB_STEP_SUMMARY
+          echo "| armeabi-v7a | N/A (no prebuilt libcurl-impersonate) | cross-compiled | cross-compiled |" >> $GITHUB_STEP_SUMMARY
+          echo "| x86 | N/A (no prebuilt libcurl-impersonate) | cross-compiled | cross-compiled |" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "### Artifacts Created:" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY

@@ -116,7 +116,7 @@ jobs:
           # cffi wheel for android_24_x86_64 on PyPI (and even if it
           # could, the compiled _wrapper.abi3.so can't be imported on
           # the Linux host).
-          CIBW_TEST_SKIP: '*'
+          CIBW_TEST_SKIP: ${{ matrix.cibw_arch == 'x86_64' && '*' || '' }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -161,7 +161,7 @@ jobs:
           CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
           CIBW_ARCHS: ${{ matrix.cibw_arch }}
           # Skip tests for x86_64 only (see curl_cffi step for rationale).
-          CIBW_TEST_SKIP: '*'
+          CIBW_TEST_SKIP: ${{ matrix.cibw_arch == 'x86_64' && '*' || '' }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -176,7 +176,7 @@ jobs:
           CIBW_BUILD: cp313-android_${{ matrix.cibw_arch }}
           CIBW_ARCHS: ${{ matrix.cibw_arch }}
           # Skip tests for x86_64 only (see curl_cffi step for rationale).
-          CIBW_TEST_SKIP: '*'
+          CIBW_TEST_SKIP: ${{ matrix.cibw_arch == 'x86_64' && '*' || '' }}
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
           ANDROID_API_LEVEL: 24
 
@@ -362,6 +362,14 @@ jobs:
 
       - name: Prepare Wheels and Libraries Directory
         run: |
+          # Diagnostic: show what was actually downloaded
+          echo "=== Contents of curl_cffi_wheels_downloaded/ ==="
+          find curl_cffi_wheels_downloaded -type f 2>/dev/null || echo "(empty or missing)"
+          echo ""
+          echo "=== Contents of libcurl_impersonate_downloaded/ ==="
+          find libcurl_impersonate_downloaded -type f 2>/dev/null || echo "(empty or missing)"
+          echo ""
+
           # --- Route 64-bit wheels to their arch folders ---
           declare -A abi_map=(
             [arm64-v8a]=arm64_v8a
@@ -375,8 +383,10 @@ jobs:
           mkdir -p "termux-packages/curl_cffi_wheels/armeabi-v7a"
           mkdir -p "termux-packages/curl_cffi_wheels/x86"
 
-          for whl in curl_cffi_wheels_downloaded/*.whl; do
-            [[ -f "$whl" ]] || continue
+          # Use find with -name to catch .whl files at any depth —
+          # download-artifact may extract them into subdirectories
+          # depending on the artifact's internal structure.
+          while IFS= read -r -d '' whl; do
             name=$(basename "$whl")
             for jni_arch in arm64-v8a x86_64; do
               cibw_tag="android_${abi_map[$jni_arch]}"
@@ -386,14 +396,13 @@ jobs:
                 break
               fi
             done
-          done
+          done < <(find curl_cffi_wheels_downloaded -name '*.whl' -print0 2>/dev/null)
 
           # --- Route 32-bit libcurl-impersonate tarballs to their arch folders ---
           mkdir -p "termux-packages/libcurl_impersonate/armeabi-v7a"
           mkdir -p "termux-packages/libcurl_impersonate/x86"
 
-          for tarball in libcurl_impersonate_downloaded/*.tar.gz; do
-            [[ -f "$tarball" ]] || continue
+          while IFS= read -r -d '' tarball; do
             name=$(basename "$tarball")
             if echo "$name" | grep -q "armeabi-v7a"; then
               cp "$tarball" "termux-packages/libcurl_impersonate/armeabi-v7a/"
@@ -405,7 +414,7 @@ jobs:
                 echo "Routed $name -> x86"
               fi
             fi
-          done
+          done < <(find libcurl_impersonate_downloaded -name '*.tar.gz' -print0 2>/dev/null)
 
           echo "=== Wheels prepared ==="
           find termux-packages/curl_cffi_wheels -type f | sort

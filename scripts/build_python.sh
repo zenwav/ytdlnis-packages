@@ -181,7 +181,8 @@ build_packages_from_source() {
     echo "sysconfig: $SYSCONFIG_FILE"
 
     # The TARGET Python's sysconfigdata module. By exporting
-    # _PYTHON_SYSCONFIGDATA_NAME (and putting this dir on PYTHONPATH) the
+    # _PYTHON_SYSCONFIGDATA_NAME (and copying just this one file into the
+    # isolated patch dir that is on PYTHONPATH) the
     # host interpreter's sysconfig/distutils reads the TARGET's config vars
     # (EXT_SUFFIX, SOABI, INCLUDEPY, LIBDIR, CC, LDSHARED, ...) instead of
     # the host's. This is the canonical CPython cross-compilation mechanism
@@ -283,13 +284,19 @@ print(f'[sitecustomize] Cross-compile patches loaded: machine={_target_machine},
       f'ptr_size={_target_ptr_size}, ext_suffix={_target_ext_suffix}')
 PYEOF
 
-    # PYTHONPATH includes: patch dir (for sitecustomize.py) and the target
-    # sysconfigdata dir (so _PYTHON_SYSCONFIGDATA_NAME, set below, can import
-    # the TARGET's build-time config vars). We deliberately do NOT add
-    # $SITE_PACKAGES here because the target cffi's _cffi_backend.so can't be
-    # imported on the host. Instead, we install a host cffi separately for
-    # build-time use.
-    export PYTHONPATH="${PATCH_DIR}:${SYSCONFIG_DIR}:${PYTHONPATH:-}"
+    # Expose the TARGET sysconfigdata to the host interpreter by copying ONLY
+    # that one file into the isolated PATCH_DIR. We must NOT put the target's
+    # lib/python3.13 directory itself on PYTHONPATH: it holds the full target
+    # (3.13) stdlib, and the host (3.12) interpreter would then import target
+    # modules such as threading.py and crash with errors like
+    # "module '_thread' has no attribute 'start_joinable_thread'".
+    cp "$SYSCONFIG_FILE" "${PATCH_DIR}/"
+
+    # PYTHONPATH includes only the isolated patch dir, which now holds both
+    # sitecustomize.py and the target sysconfigdata module. We deliberately do
+    # NOT add $SITE_PACKAGES here (the target cffi's _cffi_backend.so can't be
+    # imported on the host); a host cffi is installed separately for build use.
+    export PYTHONPATH="${PATCH_DIR}:${PYTHONPATH:-}"
 
     # --- Ensure pip is available on the host Python ---
     if ! python3 -m pip --version >/dev/null 2>&1; then

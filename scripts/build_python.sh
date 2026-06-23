@@ -8,7 +8,22 @@ set -e
 #   i686    -> x86
 #   x86_64  -> x86_64
 ARCHITECTURES=("aarch64" "arm" "i686" "x86_64")
-OUTPUT_BASE_DIR="${PWD}/output"
+
+# Capture the repository root ONCE, while PWD is still correct.
+# PHASE 2 cd's into per-arch extract dirs to build the zip, and bash
+# auto-updates $PWD as it does so. The old `cd "$PWD"` at the end of the loop
+# was therefore a no-op, leaving PWD pointing inside the *previous* arch's
+# extract dir from the 2nd architecture onward. That made `${PWD}`-relative
+# paths (the wheel dir, the libcurl tarball) resolve to non-existent
+# locations, so e.g. x86_64 silently skipped its pre-built wheels and fell
+# back to building from source. All root-relative paths now use $REPO_ROOT
+# so they are immune to that drift.
+REPO_ROOT="$PWD"
+OUTPUT_BASE_DIR="${REPO_ROOT}/output"
+# Dedicated dir (populated by the workflow) for arch-independent pure-Python
+# wheels (mutagen, certifi) injected into every ABI. Kept separate from
+# curl_cffi_wheels/ so it never affects the wheel-vs-source decision below.
+PURE_WHEEL_DIR="${REPO_ROOT}/pure_python_wheels"
 packages=(
     "ca-certificates"
     "python"
@@ -436,7 +451,7 @@ print('Patched cffi setup.py')
     #   3. cffi's FFI class generates C code and compiles _wrapper.so
     #      using the cross-compiler (CC env var) and links against
     #      the pre-built libcurl-impersonate.a via extra_link_args
-    local LIBCURL_TARBALL="${PWD}/libcurl_impersonate/${JNI_ARCH}/libcurl-impersonate-${JNI_ARCH}.tar.gz"
+    local LIBCURL_TARBALL="${REPO_ROOT}/libcurl_impersonate/${JNI_ARCH}/libcurl-impersonate-${JNI_ARCH}.tar.gz"
     if [ -f "$LIBCURL_TARBALL" ]; then
         echo "--- Building curl_cffi for ${ARCH} ---"
         echo "Using pre-built libcurl-impersonate: $LIBCURL_TARBALL"
@@ -536,9 +551,12 @@ with open('${curl_cffi_dir}/libs.json') as f:
         echo "  be available on this architecture."
     fi
 
-    # --- Install pure-Python packages (arch-independent) ---
-    echo "--- Installing pure-python packages ---"
-    python3 -m pip install --break-system-packages --only-binary=:all: --no-deps --target="$SITE_PACKAGES" mutagen certifi
+    # --- Pure-Python packages (mutagen, certifi) ---
+    # NOTE: these are arch-independent and are now injected for EVERY ABI in
+    # PHASE 2 (see "Inject pure-Python packages" below), not here. Installing
+    # them only inside this function previously left the wheel-injection ABIs
+    # (arm64-v8a, x86_64) without them, causing the arm64-v8a size mismatch
+    # versus the single-ABI workflow.
 
     # --- Verify compiled extensions have the correct EXT_SUFFIX ---
     echo "=== Verifying compiled .so files ==="
@@ -595,7 +613,7 @@ for ARCH in "${ARCHITECTURES[@]}"; do
 
         # Inject pre-built wheels if they exist (64-bit ABIs from cibuildwheel).
         # For 32-bit ABIs, fall back to cross-compiling from source.
-        WHEEL_DIR="${PWD}/curl_cffi_wheels/$JNI_ARCH"
+        WHEEL_DIR="${REPO_ROOT}/curl_cffi_wheels/$JNI_ARCH"
         if [ -d "$WHEEL_DIR" ] && ls "$WHEEL_DIR"/*.whl >/dev/null 2>&1; then
             for wheel in "$WHEEL_DIR"/*.whl; do
                 if [[ -f "$wheel" ]]; then
@@ -606,6 +624,29 @@ for ARCH in "${ARCHITECTURES[@]}"; do
         else
             echo "No pre-built wheels for $JNI_ARCH — building from source..."
             build_packages_from_source "$ARCH" "$USR_ROOT" "$SITE_PACKAGES" "$PYTHON_VERSION_DIR" "$JNI_ARCH"
+        fi
+
+        # --- Inject pure-Python packages (mutagen, certifi) for EVERY ABI ---
+        # These are arch-independent (py3-none-any) and must exist in all four
+        # ABIs' site-packages. Done here, unconditionally, with the SAME unzip
+        # mechanism used for the curl_cffi wheels, so every ABI's site-packages
+        # is consistent and matches the single-ABI workflow's output. The
+        # wheels are pre-staged into $PURE_WHEEL_DIR by the workflow; if they
+        # are absent (e.g. running the script outside CI) we fall back to pip.
+        if [ -d "$PURE_WHEEL_DIR" ] && ls "$PURE_WHEEL_DIR"/*.whl >/dev/null 2>&1; then
+            for wheel in "$PURE_WHEEL_DIR"/*.whl; do
+                if [[ -f "$wheel" ]]; then
+                    echo "Injecting pure-python wheel: $(basename "$wheel") into $SITE_PACKAGES"
+                    unzip -o "$wheel" -d "$SITE_PACKAGES"
+                fi
+            done
+        else
+            echo "No pre-staged pure-python wheels at $PURE_WHEEL_DIR — using pip..."
+            if ! python3 -m pip --version >/dev/null 2>&1; then
+                python3 -m ensurepip --upgrade || true
+            fi
+            python3 -m pip install --break-system-packages --only-binary=:all: \
+                --no-deps --target="$SITE_PACKAGES" mutagen certifi
         fi
 
         # 1. Handle the Binary
@@ -627,7 +668,10 @@ for ARCH in "${ARCHITECTURES[@]}"; do
         echo "Error: USR_ROOT not found at $USR_ROOT"
     fi
 
-    cd "$PWD"
+    # Return to the repo root for the next iteration. Must use $REPO_ROOT, not
+    # $PWD: the `cd` into the extract dir above already updated $PWD, so
+    # `cd "$PWD"` would be a no-op and leave us in the wrong directory.
+    cd "$REPO_ROOT"
 done
 
 echo "Done! Check: $JNI_OUT_DIR"

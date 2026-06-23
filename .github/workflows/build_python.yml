@@ -460,6 +460,21 @@ jobs:
             echo "  $d: $count tarball(s)"
           done
 
+          # --- Pre-download pure-Python packages (arch-independent) ---
+          # mutagen and certifi are pure-Python (py3-none-any) and must be
+          # present in EVERY ABI's site-packages (previously only the 32-bit
+          # ABIs got them, so arm64-v8a/x86_64 were ~0.3 MB smaller and were
+          # missing certifi's CA bundle + mutagen). Download them once here on
+          # the runner host (reliable network) into a DEDICATED directory so
+          # they do NOT trip build_python.sh's curl_cffi wheel-vs-source
+          # decision, which only inspects curl_cffi_wheels/<arch>. The script
+          # injects these into every ABI from $PURE_WHEEL_DIR.
+          mkdir -p termux-packages/pure_python_wheels
+          pip download --only-binary=:all: --no-deps \
+            --dest termux-packages/pure_python_wheels mutagen certifi
+          echo "=== Pure-python wheels prepared ==="
+          find termux-packages/pure_python_wheels -type f | sort
+
       - name: Prepare build scripts
         run: |
           cp scripts/build_python.sh termux-packages/build_python.sh

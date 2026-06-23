@@ -94,9 +94,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
-            keepDebugSymbols.add("**/*.zip.so")
-            keepDebugSymbols.add("**/libpython.so")
-            keepDebugSymbols.add("**/libqjs.so")
+            keepDebugSymbols += setOf("**/*.zip.so", "**/libpython.so", "**/libqjs.so")
         }
     }
 }

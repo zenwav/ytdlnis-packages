@@ -31,6 +31,59 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
+      # --------------------------------------------------------------------
+      # Why these two steps exist:
+      # The previous run failed with:
+      #   error: linking with `aarch64-linux-android-clang` failed: exit status: 1
+      #   = note: clang: error: unable to execute command: Bus error (core dumped)
+      #           clang: error: linker command failed due to signal
+      # i.e. ld.lld was killed by SIGBUS during the FINAL link of the deno
+      # binary (which statically links V8 + aws-lc and is enormous). SIGBUS at
+      # link time on GitHub-hosted runners is a resource problem, not a code
+      # bug: it happens when the runner runs out of RAM and/or the filesystem
+      # backing the linker's mmap'd output runs out of space. The stock
+      # ubuntu-latest runner (4 CPU / ~16 GB RAM / ~21 GB free on '/') is too
+      # small for two consecutive deno links. The next two steps give the build
+      # more disk and more virtual memory so the link can finish.
+      # --------------------------------------------------------------------
+      - name: Free up disk space
+        run: |
+          echo "=== Disk before cleanup ==="
+          df -h /
+          # The deno Rust target tree (V8 + aws-lc + every crate, for BOTH
+          # arm64 and x86_64) lives inside Docker's overlay on '/'. Reclaim the
+          # large preinstalled toolchains this job never uses (~25-35 GB). Done
+          # before the termux image is pulled so the space is available to it.
+          sudo rm -rf /usr/share/dotnet || true
+          sudo rm -rf /usr/local/lib/android || true
+          sudo rm -rf /opt/ghc || true
+          sudo rm -rf /opt/hostedtoolcache/CodeQL || true
+          sudo rm -rf /usr/local/share/boost || true
+          sudo rm -rf /usr/local/lib/node_modules || true
+          sudo rm -rf "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}" || true
+          sudo docker image prune --all --force || true
+          sudo apt-get clean || true
+          echo "=== Disk after cleanup ==="
+          df -h /
+
+      - name: Increase swap space
+        run: |
+          echo "=== Memory before ==="
+          free -h
+          # Add a large swapfile on the big /mnt temp disk (~65 GB free) so the
+          # memory-hungry final link of the deno binary has enough virtual
+          # memory and is not OOM/SIGBUS-killed. /mnt is separate from '/', so
+          # this does not compete with the Docker build for disk.
+          SWAP_FILE=/mnt/deno-swapfile
+          sudo swapoff -a || true
+          sudo rm -f "$SWAP_FILE" || true
+          sudo fallocate -l 16G "$SWAP_FILE" || sudo dd if=/dev/zero of="$SWAP_FILE" bs=1M count=16384
+          sudo chmod 600 "$SWAP_FILE"
+          sudo mkswap "$SWAP_FILE"
+          sudo swapon "$SWAP_FILE"
+          echo "=== Memory after ==="
+          free -h
+
       - name: Checkout termux-packages
         run: git clone --depth=1 https://github.com/termux/termux-packages
 
@@ -52,6 +105,15 @@ jobs:
 
       - name: Build Deno (arm64-v8a + x86_64 only)
         working-directory: termux-packages
+        env:
+          # run-docker.sh forwards TERMUX_DOCKER_RUN_EXTRA_ARGS to `docker run`
+          # when it CREATES the builder container. Docker's default /dev/shm is
+          # only 64 MB, which can trigger memory-mapped-IO failures (SIGBUS)
+          # during the very large final link. Give the container a roomy shm.
+          # NOTE: the container is created by the FIRST run-docker.sh call
+          # (clean.sh) below, so this must be set for that call too — hence it
+          # is declared at step level rather than inline before build-deno.sh.
+          TERMUX_DOCKER_RUN_EXTRA_ARGS: "--shm-size=4g"
         run: |
           echo "Building Deno"
           ./scripts/run-docker.sh ./clean.sh

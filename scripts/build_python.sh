@@ -401,7 +401,16 @@ PYEOF
     local CFFI_SRC_DIR="/tmp/cffi_src_${ARCH}"
     rm -rf "$CFFI_SRC_DIR"
     mkdir -p "$CFFI_SRC_DIR"
-    python3 -m pip download --no-binary :all: --no-deps cffi -d "$CFFI_SRC_DIR"
+    # --no-build-isolation is REQUIRED here. Without it, `pip download` spins up
+    # a PEP 517 build-isolation venv to prepare the sdist's metadata, and that
+    # isolated subprocess INHERITS our exported cross-compiler env
+    # (CC / CFLAGS / LDFLAGS). Build isolation strips PYTHONPATH but KEEPS env
+    # vars, so any build-dependency that must be compiled would be built with the
+    # Android cross-compiler while targeting the host, yielding
+    # "incompatible with elf64-x86-64" link errors. We already installed every
+    # host build backend (setuptools, wheel, cffi, pycparser, packaging) above,
+    # so metadata prep runs safely in the host env with no isolated build.
+    python3 -m pip download --no-binary :all: --no-deps --no-build-isolation cffi -d "$CFFI_SRC_DIR"
     tar -xf "$CFFI_SRC_DIR"/cffi-*.tar.gz -C "$CFFI_SRC_DIR"
     local cffi_dir
     cffi_dir=$(ls -d "${CFFI_SRC_DIR}/cffi-"*/)
@@ -474,7 +483,23 @@ print('Patched cffi setup.py')
         local CURL_CFFI_SRC_DIR="/tmp/curl_cffi_src_${ARCH}"
         rm -rf "$CURL_CFFI_SRC_DIR"
         mkdir -p "$CURL_CFFI_SRC_DIR"
-        python3 -m pip download --no-binary :all: --no-deps curl_cffi -d "$CURL_CFFI_SRC_DIR"
+        # --no-build-isolation is CRITICAL here (same root cause as the cffi
+        # download above). curl_cffi's build-system.requires includes
+        # cffi>=2.0.0; with build isolation AND `--no-binary :all:`, pip was
+        # forced to COMPILE that cffi build-dependency from source inside the
+        # isolated env. That isolated build inherited our exported Android
+        # cross-compiler (CC=<prefix>-androideabi24-clang, plus the target
+        # CFLAGS/LDFLAGS) yet targeted the host interpreter, so it died with:
+        #   ld.lld: error: .../crtbegin_so.o is incompatible with elf64-x86-64
+        #   error: command '...-androideabi24-clang' failed with exit code 1
+        # which aborted the entire job. NOTE: this path was never exercised in
+        # the previous revision because the libcurl tarball was looked up via a
+        # drifting $PWD and never found, so curl_cffi was silently skipped for
+        # the 32-bit ABIs. Fixing the path (REPO_ROOT) surfaced this latent bug.
+        # Running the download in the host env (build backends installed above)
+        # fetches the sdist for libs.json patching without triggering any
+        # cross-compiled build-dependency build.
+        python3 -m pip download --no-binary :all: --no-deps --no-build-isolation curl_cffi -d "$CURL_CFFI_SRC_DIR"
         tar -xf "$CURL_CFFI_SRC_DIR"/curl_cffi-*.tar.gz -C "$CURL_CFFI_SRC_DIR"
         local curl_cffi_dir
         curl_cffi_dir=$(ls -d "${CURL_CFFI_SRC_DIR}/curl_cffi-"*/)

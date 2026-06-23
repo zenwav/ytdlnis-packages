@@ -314,10 +314,14 @@ jobs:
             echo "Required secrets: DENO_KEYSTORE_BASE64, DENO_KEYSTORE_PASSWORD, DENO_KEY_ALIAS, DENO_KEY_PASSWORD"
             exit 1
           fi
-          # Decode the keystore into the deno_package root. The gradle reads
-          # signingConfig.storeFile as a path relative to deno_package/, so
-          # "deno.jks" resolves correctly.
-          echo "$DENO_KEYSTORE_BASE64" | base64 --decode > deno_package/deno.jks
+          # gradle's signingConfig does `storeFile = file("deno.jks")` from the
+          # :app module (deno_package/app/build.gradle.kts), so Gradle resolves
+          # it RELATIVE TO THE APP MODULE -> deno_package/app/deno.jks. That is
+          # exactly the path the previous run reported as "not found", so decode
+          # the keystore to that location. (keystore.properties is read via
+          # rootProject.file(...) and correctly stays in the deno_package root.)
+          mkdir -p deno_package/app
+          echo "$DENO_KEYSTORE_BASE64" | base64 --decode > deno_package/app/deno.jks
           # Write keystore.properties with the exact property names the gradle
           # expects (deno_package/app/build.gradle.kts:35-38):
           #   signingConfig.storeFile / storePassword / keyAlias / keyPassword
@@ -327,7 +331,7 @@ jobs:
           signingConfig.keyAlias=$DENO_KEY_ALIAS
           signingConfig.keyPassword=$DENO_KEY_PASSWORD
           EOF
-          echo "keystore.properties written (keystore size: $(wc -c < deno_package/deno.jks) bytes)"
+          echo "keystore.properties written (keystore size: $(wc -c < deno_package/app/deno.jks) bytes)"
 
       - name: Build APK with Gradle
         working-directory: deno_package

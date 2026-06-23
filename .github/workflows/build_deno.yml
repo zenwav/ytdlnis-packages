@@ -4,10 +4,10 @@ name: Build Deno APK for Android
 # signs, and releases the YTDLnis Deno Package APK.
 #
 # Required GitHub repository secrets for release signing:
-#   DENO_KEYSTORE_BASE64    base64-encoded .jks keystore (keytool + base64 -w0)
-#   DENO_KEYSTORE_PASSWORD  keystore password
-#   DENO_KEY_ALIAS          key alias inside the keystore
-#   DENO_KEY_PASSWORD       password for that key alias
+#   YTDLNIS_KEYSTORE_BASE64    base64-encoded .jks keystore (keytool + base64 -w0)
+#   YTDLNIS_KEYSTORE_PASSWORD  keystore password
+#   YTDLNIS_KEY_ALIAS          key alias inside the keystore
+#   YTDLNIS_KEY_PASSWORD       password for that key alias
 # If any are missing, the gradlew assembleRelease step will fail when gradle
 # cannot load the keystore. (The gradle's try/catch only suppresses errors
 # when keystore.properties does not exist; once written, it must be valid.)
@@ -27,6 +27,8 @@ jobs:
   build_deno:
     name: Build Deno JNI Libraries
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.VERSION }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -238,17 +240,21 @@ jobs:
       - name: Resolve Deno version
         id: version
         run: |
-          # Mirror the same epoch-stripping logic used in the build_deno job.
-          if [ -n "${{ github.event.inputs.version }}" ]; then
+          # Single source of truth: reuse the EXACT version that the
+          # build_deno job used to NAME the uploaded artifacts (it derives that
+          # from termux's TERMUX_PKG_VERSION). This avoids the GNU-vs-BSD `sed`
+          # difference on the macOS runner (BSD sed treats \s as a literal 's',
+          # so the old regex never matched and VERSION became the raw gradle
+          # lines) and guarantees VERSION matches the artifact names.
+          VERSION="${{ needs.build_deno.outputs.version }}"
+          # Optional workflow_dispatch override, only if the job output is empty.
+          if [ -z "$VERSION" ]; then
             RAW="${{ github.event.inputs.version }}"
             VERSION="${RAW#*:}"
-          else
-            # Read from the checked-out deno gradle (kept in sync with termux).
-            VERSION=$(grep -E '^val versionMajor' deno_package/app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+)/\1/')
-            MAJOR=$VERSION
-            MINOR=$(grep -E '^val versionMinor' deno_package/app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+)/\1/')
-            PATCH=$(grep -E '^val versionPatch' deno_package/app/build.gradle.kts | head -1 | sed -E 's/.*=\s*([0-9]+)/\1/')
-            VERSION="${MAJOR}.${MINOR}.${PATCH}"
+          fi
+          if [ -z "$VERSION" ]; then
+            echo "ERROR: Could not resolve Deno version (build_deno output empty)."
+            exit 1
           fi
           echo "VERSION=$VERSION" >> $GITHUB_ENV
           echo "Deno APK version: $VERSION"
@@ -277,14 +283,18 @@ jobs:
 
       - name: Extract and place JNI libraries
         run: |
-          # Deno ships only 2 ABIs (64-bit only).
+          # Deno ships only 2 ABIs (64-bit only). Locate each zip with
+          # `find` so extraction works regardless of whether `gh run download`
+          # placed it flat (deno_jnilibs/deno-<v>-<arch>.zip) or inside a
+          # per-artifact subfolder (deno_jnilibs/deno-<v>-<arch>/...).
           for arch in arm64-v8a x86_64; do
             mkdir -p "deno_package/app/src/main/jniLibs/$arch"
-            ZIP_PATH="deno_jnilibs/deno-${VERSION}-${arch}/deno-${VERSION}-${arch}.zip"
-            if [ -f "$ZIP_PATH" ]; then
+            ZIP_PATH=$(find deno_jnilibs -type f -name "deno-${VERSION}-${arch}.zip" | head -1)
+            if [ -n "$ZIP_PATH" ] && [ -f "$ZIP_PATH" ]; then
+              echo "Found $arch zip: $ZIP_PATH"
               unzip -o "$ZIP_PATH" -d "deno_package/app/src/main/jniLibs/$arch/"
             else
-              echo "ERROR: No zip found for $arch at $ZIP_PATH"
+              echo "ERROR: No zip found for $arch (deno-${VERSION}-${arch}.zip)"
               find deno_jnilibs
               exit 1
             fi

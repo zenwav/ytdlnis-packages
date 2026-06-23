@@ -92,6 +92,7 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            keepDebugSymbols += "**/libdeno.zip.so"
         }
     }
 }
